@@ -1,0 +1,3 @@
+2182A -> 23
+keysight 33600A -> 5
+chave metas -> 10
