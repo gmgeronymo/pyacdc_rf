@@ -48,8 +48,8 @@ import numpy
 import datetime
 import csv
 # condicoes ambientais - bme280
-import smbus2
-import bme280
+#import smbus2
+#import bme280
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
@@ -604,7 +604,9 @@ def registro_frequencia(registro_filename,frequencia,n_array,vac_equilibrio):
         registro.writerow(['Vac equilíbrio [V]',str(vac_equilibrio).replace('.',',')]); # Vac calculado para o equilíbrio
         registro.writerow([' ']); # pular linha
         # cabeçalho da tabela de medicao
-        registro.writerow(['Data / hora','AC (STD)','AC (DUT)','DC+ (STD)','DC+ (DUT)','AC (STD)','AC (DUT)','DC- (STD)','DC- (DUT)','AC (STD)','AC (DUT)', 'Diferença', 'Delta', 'Tensão DC Aplicada','Temperatura [ºC]', 'Umidade Relativa [% u.r.]', 'Pressão Atmosférica [hPa]']);
+        #registro.writerow(['Data / hora','AC (STD)','AC (DUT)','DC+ (STD)','DC+ (DUT)','AC (STD)','AC (DUT)','DC- (STD)','DC- (DUT)','AC (STD)','AC (DUT)', 'Diferença', 'Delta', 'Tensão DC Aplicada','Temperatura [ºC]', 'Umidade Relativa [% u.r.]', 'Pressão Atmosférica [hPa]']);
+        registro.writerow(['Data / hora','AC (STD)','AC (DUT)','DC+ (STD)','DC+ (DUT)','AC (STD)','AC (DUT)','DC- (STD)','DC- (DUT)','AC (STD)','AC (DUT)', 'Diferença', 'Delta', 'Tensão DC Aplicada']);
+
     csvfile.close();
     return
 #-------------------------------------------------------------------------------
@@ -614,11 +616,15 @@ def registro_frequencia(registro_filename,frequencia,n_array,vac_equilibrio):
 # registro_filename - o nome do registro criado com a função criar_registro()
 # results - array com os resultados
 # vdc_atual - tensão DC calculada para a medição atual
-def registro_linha(registro_filename,results,vdc_atual,ca_data):
+#def registro_linha(registro_filename,results,vdc_atual,ca_data):
+def registro_linha(registro_filename,results,vdc_atual):
+
     # results -> results['std_readings'], results['dut_readings'], results['dif'], results['Delta'], results['adj_dc'] e results['timestamp']
     with open(registro_filename,"a") as csvfile:
         registro = csv.writer(csvfile, delimiter=';',lineterminator='\n')
-        registro.writerow([results['timestamp'],str(results['std_readings'][0]).replace('.',','),str(results['dut_readings'][0]).replace('.',','),str(results['std_readings'][1]).replace('.',','),str(results['dut_readings'][1]).replace('.',','),str(results['std_readings'][2]).replace('.',','),str(results['dut_readings'][2]).replace('.',','),str(results['std_readings'][3]).replace('.',','),str(results['dut_readings'][3]).replace('.',','),str(results['std_readings'][4]).replace('.',','),str(results['dut_readings'][4]).replace('.',','),str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',','),str(ca_data.temperature).replace('.',','),str(ca_data.humidity).replace('.',','),str(ca_data.pressure).replace('.',',')]);
+        #registro.writerow([results['timestamp'],str(results['std_readings'][0]).replace('.',','),str(results['dut_readings'][0]).replace('.',','),str(results['std_readings'][1]).replace('.',','),str(results['dut_readings'][1]).replace('.',','),str(results['std_readings'][2]).replace('.',','),str(results['dut_readings'][2]).replace('.',','),str(results['std_readings'][3]).replace('.',','),str(results['dut_readings'][3]).replace('.',','),str(results['std_readings'][4]).replace('.',','),str(results['dut_readings'][4]).replace('.',','),str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',','),str(ca_data.temperature).replace('.',','),str(ca_data.humidity).replace('.',','),str(ca_data.pressure).replace('.',',')]);
+        registro.writerow([results['timestamp'],str(results['std_readings'][0]).replace('.',','),str(results['dut_readings'][0]).replace('.',','),str(results['std_readings'][1]).replace('.',','),str(results['dut_readings'][1]).replace('.',','),str(results['std_readings'][2]).replace('.',','),str(results['dut_readings'][2]).replace('.',','),str(results['std_readings'][3]).replace('.',','),str(results['dut_readings'][3]).replace('.',','),str(results['std_readings'][4]).replace('.',','),str(results['dut_readings'][4]).replace('.',','),str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',',')]);
+
 
     csvfile.close();
     return
@@ -647,8 +653,8 @@ def registro_media(registro_filename,diferenca):
 def main():
     try:
         global freq;
-        print("Inicializando BME280 (condições ambientais)")
-        bme280_init()
+        #print("Inicializando BME280 (condições ambientais)")
+        #bme280_init()
         print("Inicializando os intrumentos...")
         instrument_init()  # inicializa os instrumentos
         print("Colocando fontes em OPERATE...")
@@ -696,18 +702,21 @@ def main():
                 print("Diferença ac-dc: {:5.2f}".format(results['dif']))               
                 print("Delta: {:5.2f}".format(results['Delta']))
                 print("Data / hora: "+results['timestamp']);
-                ca_data = bme280_read();
-                print("Temperatura: {:5.2f} ºC".format(ca_data.temperature));
-                print("Umidade Relativa: {:5.2f} %u.r.".format(ca_data.humidity));
-                print("Pressão atmosférica: {:5.2f} hPa".format(ca_data.pressure));
+                #ca_data = bme280_read();
+                #print("Temperatura: {:5.2f} ºC".format(ca_data.temperature));
+                #print("Umidade Relativa: {:5.2f} %u.r.".format(ca_data.humidity));
+                #print("Pressão atmosférica: {:5.2f} hPa".format(ca_data.pressure));
                 # original: 50 ppm
                 # usando gerador agilent: 1000 ppm (ou 0,1%) (estabilidade e resolucao nao permite criterio tao  rigido)
-                if abs(results['Delta']) > 1000:               # se o ponto não passa no critério de descarte, repetir medição
-                    print("Delta > 0,1%. Ponto descartado!")
+                # TODO: criterio de exclusao configuravel no arquivo .ini
+                if abs(results['Delta']) > 150:               # se o ponto não passa no critério de descarte, repetir medição
+                    print("Delta > 100 ppm. Ponto descartado!")
                 else:
                     diff_acdc.append(results['dif']);
                     Delta.append(results['Delta']);
-                    registro_linha(filename,results,vdc_atual,ca_data);
+                    #registro_linha(filename,results,vdc_atual,ca_data);
+                    registro_linha(filename,results,vdc_atual);
+
                     i += 1;               
                 vdc_atual = results['adj_dc'];              # aplica o ajuste DC
                 if vdc_atual > 1.1*vdc_nominal:
