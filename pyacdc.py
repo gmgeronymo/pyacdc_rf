@@ -72,6 +72,7 @@ freq_array = config['Measurement Config']['frequency'].split(',') # Array com as
 r_dut = float(config['Measurement Config']['r_dut'])
 r_std = float(config['Measurement Config']['r_std'])
 delta_max_ppm = float(config['Measurement Config'].get('delta_max_ppm', '150'))
+measurement_cycle = config['Measurement Config'].get('measurement_cycle', 'RF-AC-RF-AC-RF').strip().upper()
 use_bme280 = config.getboolean('Misc', 'use_bme280', fallback=False)
 std_model = config['Instruments'].get('std', '2182A').strip().upper()
 dut_model = config['Instruments'].get('dut', '2182A').strip().upper()
@@ -84,6 +85,17 @@ else:
     ac_source_model = '33600A'
     rf_source_model = '33600A'
 load = str(int(1 / ( (1/r_dut) + (1/r_std) )))
+
+if measurement_cycle == 'RF-AC-RF-AC-RF':
+    cycle_sequence = ['RF', 'AC', 'RF', 'AC', 'RF']
+elif measurement_cycle == 'AC-RF-AC':
+    cycle_sequence = ['AC', 'RF', 'AC']
+else:
+    raise NameError('Ciclo de medicao invalido. Use RF-AC-RF-AC-RF ou AC-RF-AC em Measurement Config/measurement_cycle.')
+
+rf_indices = [i for i, c in enumerate(cycle_sequence) if c == 'RF']
+ac_indices = [i for i, c in enumerate(cycle_sequence) if c == 'AC']
+cycle_csv_labels = ['RF' if c == 'RF' else 'AC 100 kHz' for c in cycle_sequence]
 
 if use_bme280:
     import smbus2
@@ -426,70 +438,31 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
     set_ac_voltage_and_frequency(vdc_atual, 100000)
     # Iniciar medição
     espera(2); # esperar 2 segundos
-    # Ciclo AC
-    # testa se existem dados do último ciclo AC da medição anterior
-    if (ciclo_ac == []):
-        # caso negativo, medir AC normalmente
-        sw.write_raw(ac);
-        print("Ciclo RF")
-        espera(wait_time);
-        # leituras
+    for i, cycle_type in enumerate(cycle_sequence):
+        if i == 0 and (ciclo_ac != []):
+            if cycle_type == 'RF':
+                print("Ciclo RF")
+            else:
+                print("Ciclo AC 100 kHz")
+            std_readings.append(ciclo_ac[0])
+            dut_readings.append(ciclo_ac[1])
+            print_std(std_readings)
+            print_dut(dut_readings)
+            continue
+
+        if cycle_type == 'RF':
+            sw.write_raw(ac)
+            print("Ciclo RF")
+        else:
+            sw.write_raw(dc)
+            print("Ciclo AC 100 kHz")
+
+        espera(wait_time)
         std_readings.append(ler_std())
-        #espera(1)
         dut_readings.append(ler_dut())
-        print_std(std_readings);
-        print_dut(dut_readings);
-    else:
-        # caso positivo, aproveitar as medições do ciclo anterior
-        print("Ciclo RF")
-        std_readings.append(ciclo_ac[0])
-        dut_readings.append(ciclo_ac[1])
-        print_std(std_readings);
-        print_dut(dut_readings);
-    # Ciclo DC
-    sw.write_raw(dc);
-    print("Ciclo AC 100 kHz")
-    espera(wait_time);
-    std_readings.append(ler_std())
-    #espera(1)
-    dut_readings.append(ler_dut())
-    print_std(std_readings);
-    print_dut(dut_readings);
-    # Ciclo AC
-    sw.write_raw(ac);
-    print("Ciclo RF")
-    #espera(wait_time/2);
-    # Mudar fonte DC para -DC
-    #dc_source.write("OUT -{:.6f} V".format(vdc_atual));
-    #espera(wait_time/2);
-    espera(wait_time);
-    std_readings.append(ler_std())
-    #espera(1)
-    dut_readings.append(ler_dut())
-    print_std(std_readings);
-    print_dut(dut_readings);
-    # Ciclo -DC
-    sw.write_raw(dc);
-    print("Ciclo AC 100 kHz")
-    espera(wait_time);
-    std_readings.append(ler_std())
-    #espera(1)
-    dut_readings.append(ler_dut())
-    print_std(std_readings);
-    print_dut(dut_readings);
-    # Ciclo AC
-    sw.write_raw(ac);
-    print("Ciclo RF")
-    #espera(wait_time/2);
-    # Mudar fonte DC para +DC
-    #dc_source.write("OUT +{:.6f} V".format(vdc_atual));
-    #espera(wait_time/2);
-    espera(wait_time);
-    std_readings.append(ler_std())
-    #espera(1)
-    dut_readings.append(ler_dut())
-    print_std(std_readings);
-    print_dut(dut_readings);
+        print_std(std_readings)
+        print_dut(dut_readings)
+
     # retorna as leituras obtidas para o objeto e para o padrão
     return {'std_readings':std_readings, 'dut_readings':dut_readings}
 #-------------------------------------------------------------------------------
@@ -508,11 +481,11 @@ def acdc_calc(readings,N,vdc_atual):
     x = numpy.array([float(a.strip()) for a in readings['std_readings']]);
     # extrai os dados de leitura do objeto
     y = numpy.array([float(a.strip()) for a in readings['dut_readings']])
-    # calcula Xac, Xdc, Yac e Ydc a partir das leituras brutas    
-    Xac = numpy.mean(numpy.array([x[0], x[2], x[4]]));     # AC médio padrão
-    Xdc = numpy.mean(numpy.array([x[1], x[3]]));           # DC médio padrão
-    Yac = numpy.mean(numpy.array([y[0], y[2], y[4]]));     # AC médio objeto
-    Ydc = numpy.mean(numpy.array([y[1], y[3]]));           # DC médio objeto
+    # calcula Xac, Xdc, Yac e Ydc a partir das leituras brutas
+    Xac = numpy.mean(x[rf_indices]);
+    Xdc = numpy.mean(x[ac_indices]);
+    Yac = numpy.mean(y[rf_indices]);
+    Ydc = numpy.mean(y[ac_indices]);
     # Variáveis auxiliares X e Y
     X = Xac/Xdc - 1;
     Y = Yac/Ydc - 1;
@@ -640,7 +613,10 @@ def registro_frequencia(registro_filename,frequencia,n_array,vac_equilibrio):
         registro.writerow(['Vac equilíbrio [V]',str(vac_equilibrio).replace('.',',')]); # Vac calculado para o equilíbrio
         registro.writerow([' ']); # pular linha
         # cabeçalho da tabela de medicao
-        header = ['Data / hora','AC (STD)','AC (DUT)','DC+ (STD)','DC+ (DUT)','AC (STD)','AC (DUT)','DC- (STD)','DC- (DUT)','AC (STD)','AC (DUT)', 'Diferença', 'Delta', 'Tensão DC Aplicada']
+        header = ['Data / hora']
+        for label in cycle_csv_labels:
+            header.extend([label+' (STD)', label+' (DUT)'])
+        header.extend(['Diferença', 'Delta', 'Tensão DC Aplicada'])
         if use_bme280:
             header.extend(['Temperatura [ºC]', 'Umidade Relativa [% u.r.]', 'Pressão Atmosférica [hPa]'])
         registro.writerow(header)
@@ -660,7 +636,10 @@ def registro_linha(registro_filename,results,vdc_atual,ca_data=None):
     # results -> results['std_readings'], results['dut_readings'], results['dif'], results['Delta'], results['adj_dc'] e results['timestamp']
     with open(registro_filename,"a") as csvfile:
         registro = csv.writer(csvfile, delimiter=';',lineterminator='\n')
-        row = [results['timestamp'],str(results['std_readings'][0]).replace('.',','),str(results['dut_readings'][0]).replace('.',','),str(results['std_readings'][1]).replace('.',','),str(results['dut_readings'][1]).replace('.',','),str(results['std_readings'][2]).replace('.',','),str(results['dut_readings'][2]).replace('.',','),str(results['std_readings'][3]).replace('.',','),str(results['dut_readings'][3]).replace('.',','),str(results['std_readings'][4]).replace('.',','),str(results['dut_readings'][4]).replace('.',','),str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',',')]
+        row = [results['timestamp']]
+        for std_value, dut_value in zip(results['std_readings'], results['dut_readings']):
+            row.extend([str(std_value).replace('.',','), str(dut_value).replace('.',',')])
+        row.extend([str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',',')])
         if use_bme280 and ca_data is not None:
             row.extend([str(ca_data.temperature).replace('.',','),str(ca_data.humidity).replace('.',','),str(ca_data.pressure).replace('.',',')])
         registro.writerow(row)
@@ -737,7 +716,7 @@ def main():
                     ciclo_ac = [];
                     first_measure = False
                 else:
-                    ciclo_ac = [readings['std_readings'][4], readings['dut_readings'][4]];  # caso não seja, aproveitar o último ciclo AC
+                    ciclo_ac = [readings['std_readings'][-1], readings['dut_readings'][-1]];  # caso não seja, aproveitar o último ciclo
                 readings = measure(vdc_atual,vac_atual,ciclo_ac);                           # da repetição anterior
                 results = acdc_calc(readings,n_value,vdc_atual);                            # calcula a diferença ac-dc         
                 print("Diferença ac-dc: {:5.2f}".format(results['dif']))               
