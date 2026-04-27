@@ -45,11 +45,7 @@ import datetime
 import configparser
 import time
 import numpy
-import datetime
 import csv
-# condicoes ambientais - bme280
-#import smbus2
-#import bme280
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
@@ -75,7 +71,23 @@ vdc_nominal = float(config['Measurement Config']['voltage']); # Tensão nominal 
 freq_array = config['Measurement Config']['frequency'].split(',') # Array com as frequências
 r_dut = float(config['Measurement Config']['r_dut'])
 r_std = float(config['Measurement Config']['r_std'])
+delta_max_ppm = float(config['Measurement Config'].get('delta_max_ppm', '150'))
+use_bme280 = config.getboolean('Misc', 'use_bme280', fallback=False)
+std_model = config['Instruments'].get('std', '2182A').strip().upper()
+dut_model = config['Instruments'].get('dut', '2182A').strip().upper()
+if config.has_section('Sources'):
+    source_mode = config['Sources'].get('mode', 'shared').strip().lower()
+    ac_source_model = config['Sources'].get('ac_source', '33600A').strip().upper()
+    rf_source_model = config['Sources'].get('rf_source', '33600A').strip().upper()
+else:
+    source_mode = 'shared'
+    ac_source_model = '33600A'
+    rf_source_model = '33600A'
 load = str(int(1 / ( (1/r_dut) + (1/r_std) )))
+
+if use_bme280:
+    import smbus2
+    import bme280
 
 #-------------------------------------------------------------------------------
 
@@ -109,83 +121,123 @@ def bme280_init():
 def bme280_read():
     return bme280.sample(bus, address, calibration_params)
 
+def configure_voltmeter(meter, model):
+    if model == '182A':
+        meter.write("X")
+        meter.write("R0I0B1X")
+        meter.write("O1P2X")
+        print("Keithley 182A...\n")
+    elif model == '2182A':
+        meter.write("SENS:CHAN 1")
+        meter.write(":SENS:VOLT:CHAN1:RANG:AUTO ON")
+        meter.write(":SENS:VOLT:NPLC 18")
+        meter.write(":SENS:VOLT:DIG 8")
+    print(meter.query("*IDN?"))
+    print("OK!\n")
+
+def read_voltmeter(meter, model):
+    if model == '182A':
+        return meter.query("X")
+    if model == '2182A':
+        return meter.query(":FETCH?")
+    try:
+        return meter.query("READ?")
+    except Exception:
+        return meter.query(":FETCH?")
+
+def set_ac_voltage_and_frequency(voltage, frequency=100000):
+    if source_mode == 'shared':
+        if ac_source_model == '33600A':
+            ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(voltage))
+            ac_source.write("SOUR1:FREQ {:.0f}".format(frequency))
+        else:
+            raise NameError('Modo shared suporta apenas fonte 33600A.')
+    else:
+        if ac_source_model == '33600A':
+            ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(voltage))
+            ac_source.write("SOUR1:FREQ {:.0f}".format(frequency))
+        elif ac_source_model == '5700A':
+            ac_source.write("OUT {:.6f} V, {:.0f} HZ".format(voltage, frequency))
+        else:
+            raise NameError('Modelo de fonte AC não suportado: {}'.format(ac_source_model))
+
+def set_rf_voltage_and_frequency(voltage, frequency):
+    if source_mode == 'shared':
+        if rf_source_model == '33600A':
+            ac_source.write("SOUR2:VOLT {:.3f} VRMS".format(voltage))
+            ac_source.write("SOUR2:FREQ {:.0f}".format(frequency))
+        else:
+            raise NameError('Modo shared suporta apenas fonte 33600A no canal RF.')
+    else:
+        if rf_source_model == '33600A':
+            rf_source.write("SOUR1:VOLT {:.3f} VRMS".format(voltage))
+            rf_source.write("SOUR1:FREQ {:.0f}".format(frequency))
+        else:
+            raise NameError('Modelo de fonte RF não suportado: {}'.format(rf_source_model))
+
+def sources_output_on():
+    if source_mode == 'shared':
+        ac_source.write("OUTP1 ON")
+        ac_source.write("OUTP2 ON")
+    else:
+        if ac_source_model == '33600A':
+            ac_source.write("OUTP1 ON")
+        elif ac_source_model == '5700A':
+            ac_source.write("OPER")
+        if rf_source_model == '33600A':
+            rf_source.write("OUTP1 ON")
+
+def sources_output_off():
+    if source_mode == 'shared':
+        ac_source.write("OUTP1 OFF")
+        ac_source.write("OUTP2 OFF")
+    else:
+        if ac_source_model == '33600A':
+            ac_source.write("OUTP1 OFF")
+        elif ac_source_model == '5700A':
+            ac_source.write("STBY")
+        if rf_source_model == '33600A':
+            rf_source.write("OUTP1 OFF")
+
 # função instrument_init()
 # inicializa a comunicação com os instrumentos, via GPIB
 def instrument_init():
     # variáveis globais
     global ac_source;
+    global rf_source;
     global std;
     global dut;
     global sw;
-    # Inicialização dos intrumentos conectados ao barramento GPIB
-    print("Comunicando com fonte AC no endereço "+config['GPIB']['ac_source']+"...");
-    ac_source = rm.open_resource("GPIB0::"+config['GPIB']['ac_source']+"::INSTR");
-    print(ac_source.query("*IDN?"));
-    print("OK!\n");
+
+    if source_mode == 'shared':
+        source_address = config['GPIB'].get('ac_source', config['GPIB'].get('rf_source', '5'))
+        print("Comunicando com fonte AC/RF no endereço "+source_address+"...")
+        ac_source = rm.open_resource("GPIB0::"+source_address+"::INSTR")
+        rf_source = ac_source
+        print(ac_source.query("*IDN?"))
+        print("OK!\n")
+    elif source_mode == 'separate':
+        ac_address = config['GPIB'].get('ac_source', '5')
+        rf_address = config['GPIB'].get('rf_source', ac_address)
+        print("Comunicando com fonte AC no endereço "+ac_address+"...")
+        ac_source = rm.open_resource("GPIB0::"+ac_address+"::INSTR")
+        print(ac_source.query("*IDN?"))
+        print("OK!\n")
+
+        print("Comunicando com fonte RF no endereço "+rf_address+"...")
+        rf_source = rm.open_resource("GPIB0::"+rf_address+"::INSTR")
+        print(rf_source.query("*IDN?"))
+        print("OK!\n")
+    else:
+        raise NameError("Valor inválido para Sources/mode (use shared ou separate).")
 
     print("Comunicando com o medidor do padrão no endereço "+config['GPIB']['std']+"...");
     std = rm.open_resource("GPIB0::"+config['GPIB']['std']+"::INSTR");
-    
-    if config['Instruments']['std'] == '182A': 
-        # TODO: 181 -> selecionar faixa manualmente
-        # query dividida para evitar timeout
-        # R0 = enable autorange
-        # I0 = disable buffer
-        # B1 = 6 1/2 digit resolution
-        # S2 = periodo de integracao: 100 ms
-        # N1 = filters on
-        # O1 = analog filter on
-        # P2 = digital filter medium response
-        std.write("X")
-        #std.write("R0I0B1S2N1O1P2X")
-        std.write("R0I0B1X")
-        #std.write("S2N1X")
-        std.write("O1P2X")
-        print("Keithley 182A...\n")
-        print("OK!\n");
-
-    elif config['Instruments']['std'] == '2182A':
-        std.write("SENS:CHAN 1")
-        std.write(":SENS:VOLT:CHAN1:RANG:AUTO ON")
-        std.write(":SENS:VOLT:NPLC 18")
-        std.write(":SENS:VOLT:DIG 8")
-        print(std.query("*IDN?"));
-        print("OK!\n");
-    else :
-        print(std.query("*IDN?"));
-        print("OK!\n");
+    configure_voltmeter(std, std_model)
 
     print("Comunicando com o medidor do objeto no endereço "+config['GPIB']['dut']+"...");
     dut = rm.open_resource("GPIB0::"+config['GPIB']['dut']+"::INSTR");
-    
-    if config['Instruments']['dut'] == '182A': 
-        # TODO: 181 -> selecionar faixa manualmente
-        # query dividida para evitar timeout
-        # R0 = enable autorange
-        # I0 = disable buffer
-        # B1 = 6 1/2 digit resolution
-        # S2 = periodo de integracao: 100 ms
-        # N1 = filters on
-        # O1 = analog filter on
-        # P2 = digital filter medium response
-        dut.write("X")
-        #std.write("R0I0B1S2N1O1P2X")
-        dut.write("R0I0B1X")
-        #std.write("S2N1X")
-        dut.write("O1P2X")
-        print("Keithley 182A...\n")
-        print("OK!\n");
-
-    elif config['Instruments']['dut'] == '2182A':
-        dut.write("SENS:CHAN 1")
-        dut.write(":SENS:VOLT:CHAN1:RANG:AUTO ON")
-        dut.write(":SENS:VOLT:NPLC 18")
-        dut.write(":SENS:VOLT:DIG 8")
-        print(dut.query("*IDN?"));
-        print("OK!\n");
-    else :
-        print(dut.query("*IDN?"));
-        print("OK!\n");
+    configure_voltmeter(dut, dut_model)
  
     print("Comunicando com a chave no endereço "+config['GPIB']['sw']+"...");
     sw = rm.open_resource("GPIB0::"+config['GPIB']['sw']+"::INSTR");
@@ -204,23 +256,34 @@ def instrument_init():
 # função meas_init()
 # inicializa os instrumentos, coloca as fontes em OPERATE, etc.
 def meas_init():
-    # configuração da fonte AC
-    # canal 1: ac 100 kHz
-    # canal 2: rf (default 1 MHz)
-    ac_source.write("*RST")
-    ac_source.write("*CLS")
-    ac_source.write("OUTP1:LOAD "+load)
-    ac_source.write("OUTP2:LOAD "+load)
-    ac_source.write("SOUR1:FUNC SIN")
-    ac_source.write("SOUR2:FUNC SIN")
-    ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(vdc_nominal));
-    ac_source.write("SOUR2:VOLT {:.3f} VRMS".format(vac_nominal));
-    ac_source.write("SOUR1:FREQ 100000")
-    ac_source.write("SOUR2:FREQ 1000000")
+    if source_mode == 'shared':
+        ac_source.write("*RST")
+        ac_source.write("*CLS")
+        ac_source.write("OUTP1:LOAD "+load)
+        ac_source.write("OUTP2:LOAD "+load)
+        ac_source.write("SOUR1:FUNC SIN")
+        ac_source.write("SOUR2:FUNC SIN")
+    else:
+        if ac_source_model == '33600A':
+            ac_source.write("*RST")
+            ac_source.write("*CLS")
+            ac_source.write("OUTP1:LOAD "+load)
+            ac_source.write("SOUR1:FUNC SIN")
+        elif ac_source_model == '5700A':
+            ac_source.write("*RST")
+            ac_source.write("*CLS")
+
+        if rf_source_model == '33600A':
+            rf_source.write("*RST")
+            rf_source.write("*CLS")
+            rf_source.write("OUTP1:LOAD "+load)
+            rf_source.write("SOUR1:FUNC SIN")
+
+    set_ac_voltage_and_frequency(vdc_nominal, 100000)
+    set_rf_voltage_and_frequency(vac_nominal, 1000000)
     # Entrar em OPERATE
     espera(2); # esperar 2 segundos
-    ac_source.write("OUTP1 ON");
-    ac_source.write("OUTP2 ON");
+    sources_output_on()
     espera(10);
     sw.write_raw(ac);
     espera(10);
@@ -230,21 +293,13 @@ def meas_init():
 # retorna uma leitura single-shot da saída do TC padrão
 # não aceita parâmetros de entrada
 def ler_std():
-    if config['Instruments']['std'] == '182A':
-        x = std.query("X")
-    elif config['Instruments']['std'] == '2182A':
-        x = std.query(":FETCH?")
-    return x
+    return read_voltmeter(std, std_model)
 #-------------------------------------------------------------------------------
 # função ler_std()
 # retorna uma leitura single-shot da saída do TC objeto
 # não aceita parâmetros de entrada
 def ler_dut():
-    if config['Instruments']['dut'] == '182A':
-        x = dut.query("X")
-    elif config['Instruments']['dut'] == '2182A':
-        x = dut.query(":FETCH?")
-    return x
+    return read_voltmeter(dut, dut_model)
 #-------------------------------------------------------------------------------
 # aceita como parâmetro o vetor com as leituras do padrão
 # escreve na tela a última leitura da saída do TC padrão
@@ -263,8 +318,7 @@ def print_dut(dut_readings):
 def aquecimento(tempo):
     # executa o aquecimento, mantendo a tensão nominal aplicada pelo tempo
     # (em segundos) definido na variavel "tempo"
-    ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(vdc_nominal));
-    ac_source.write("SOUR1:FREQ +1.0E+05");
+    set_ac_voltage_and_frequency(vdc_nominal, 100000)
     sw.write_raw(dc);
     espera(tempo);
     return
@@ -287,12 +341,8 @@ def n_measure(M):
     # variavel da constante V0 / (Vi-V0)
     k = []
     # aplica o valor nominal de tensão
-    #ac_source.write("OUT {:.6f} V".format(vac_nominal));
-    ac_source.write("SOUR2:VOLT {:.3f} VRMS".format(vac_nominal));
-    #ac_source.write("OUT "+str(freq)+" HZ");
-    ac_source.write("SOUR2:FREQ "+str(freq));
-    #dc_source.write("OUT +{:.6f} V".format(vdc_nominal));
-    ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(vdc_nominal));
+    set_rf_voltage_and_frequency(vac_nominal, freq)
+    set_ac_voltage_and_frequency(vdc_nominal, 100000)
     
     espera(2); # espera 2 segundos
     sw.write_raw(dc);
@@ -320,8 +370,7 @@ def n_measure(M):
 
         sw.write_raw(ac);
         espera(2); # esperar 2 segundos
-        #dc_source.write("OUT +{:.6f} V".format(Vi));
-        ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(Vi));
+        set_ac_voltage_and_frequency(Vi, 100000)
         espera(2); # esperar 2 segundos
         sw.write_raw(dc);
         print("Vdc nominal + 1%: +{:.3f} V".format(Vi));
@@ -372,15 +421,9 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
     std_readings = []
     dut_readings = []
     # configuração da fonte AC (RF)
-    #ac_source.write("OUT {:.6f} V".format(vac_atual));
-    ac_source.write("SOUR2:VOLT {:.3f} VRMS".format(vac_atual));
-    #ac_source.write("OUT "+str(freq)+" HZ");
-    ac_source.write("SOUR2:FREQ "+str(freq));
+    set_rf_voltage_and_frequency(vac_atual, freq)
     # configuração da fonte DC (AC 100 kHz)
-    #dc_source.write("OUT +{:.6f} V".format(vdc_atual));
-    ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(vdc_atual));
-    #dc_source.write("OUT 0 HZ");
-    ac_source.write("SOUR1:FREQ 100000");
+    set_ac_voltage_and_frequency(vdc_atual, 100000)
     # Iniciar medição
     espera(2); # esperar 2 segundos
     # Ciclo AC
@@ -491,18 +534,15 @@ def acdc_calc(readings,N,vdc_atual):
 # A função não aceita parâmetros de entrada
 def equilibrio():
     dut_readings = []
-    #ac_source.write("OUT "+str(freq)+" HZ");
-    ac_source.write("SOUR2:FREQ "+str(freq));
-    #dc_source.write("OUT {:.6f} V".format(vdc_nominal));
-    ac_source.write("SOUR1:VOLT {:.3f} VRMS".format(vdc_nominal));
+    set_rf_voltage_and_frequency(vac_nominal, freq)
+    set_ac_voltage_and_frequency(vdc_nominal, 100000)
     espera(5) # aguarda 5 segundos antes de iniciar equilibrio
         
     # Aplica o valor nominal
     sw.write_raw(dc);
     print("Vdc nominal: +{:.3f} V".format(vdc_nominal))
     espera(wait_time/2);
-    #ac_source.write("OUT {:.6f} V".format(0.999*vac_nominal));
-    ac_source.write("SOUR2:VOLT {:.3f} VRMS".format(0.999*vac_nominal));
+    set_rf_voltage_and_frequency(0.999*vac_nominal, freq)
     espera(wait_time/2);
     dut_readings.append(ler_dut())
     print_dut(dut_readings);
@@ -514,8 +554,7 @@ def equilibrio():
     print_dut(dut_readings);
     sw.write_raw(dc);
     espera(2);
-    #ac_source.write("OUT {:.6f} V".format(1.001*vac_nominal));
-    ac_source.write("SOUR2:VOLT {:.3f} VRMS".format(1.001*vac_nominal));
+    set_rf_voltage_and_frequency(1.001*vac_nominal, freq)
     espera(2);
     # Aplica Vac + 0.1%
     print("Vac nominal + 0.1%: +{:.3f} V".format(1.001*vac_nominal))
@@ -541,10 +580,7 @@ def equilibrio():
 def stop_instruments():
     sw.write_raw(reset);
     espera(1)
-    #ac_source.write("STBY");
-    #dc_source.write("STBY");
-    ac_source.write("OUTP1 OFF")
-    ac_source.write("OUTP2 OFF")
+    sources_output_off()
     return
 #-------------------------------------------------------------------------------
 # função criar_registro()
@@ -604,8 +640,10 @@ def registro_frequencia(registro_filename,frequencia,n_array,vac_equilibrio):
         registro.writerow(['Vac equilíbrio [V]',str(vac_equilibrio).replace('.',',')]); # Vac calculado para o equilíbrio
         registro.writerow([' ']); # pular linha
         # cabeçalho da tabela de medicao
-        #registro.writerow(['Data / hora','AC (STD)','AC (DUT)','DC+ (STD)','DC+ (DUT)','AC (STD)','AC (DUT)','DC- (STD)','DC- (DUT)','AC (STD)','AC (DUT)', 'Diferença', 'Delta', 'Tensão DC Aplicada','Temperatura [ºC]', 'Umidade Relativa [% u.r.]', 'Pressão Atmosférica [hPa]']);
-        registro.writerow(['Data / hora','AC (STD)','AC (DUT)','DC+ (STD)','DC+ (DUT)','AC (STD)','AC (DUT)','DC- (STD)','DC- (DUT)','AC (STD)','AC (DUT)', 'Diferença', 'Delta', 'Tensão DC Aplicada']);
+        header = ['Data / hora','AC (STD)','AC (DUT)','DC+ (STD)','DC+ (DUT)','AC (STD)','AC (DUT)','DC- (STD)','DC- (DUT)','AC (STD)','AC (DUT)', 'Diferença', 'Delta', 'Tensão DC Aplicada']
+        if use_bme280:
+            header.extend(['Temperatura [ºC]', 'Umidade Relativa [% u.r.]', 'Pressão Atmosférica [hPa]'])
+        registro.writerow(header)
 
     csvfile.close();
     return
@@ -617,13 +655,15 @@ def registro_frequencia(registro_filename,frequencia,n_array,vac_equilibrio):
 # results - array com os resultados
 # vdc_atual - tensão DC calculada para a medição atual
 #def registro_linha(registro_filename,results,vdc_atual,ca_data):
-def registro_linha(registro_filename,results,vdc_atual):
+def registro_linha(registro_filename,results,vdc_atual,ca_data=None):
 
     # results -> results['std_readings'], results['dut_readings'], results['dif'], results['Delta'], results['adj_dc'] e results['timestamp']
     with open(registro_filename,"a") as csvfile:
         registro = csv.writer(csvfile, delimiter=';',lineterminator='\n')
-        #registro.writerow([results['timestamp'],str(results['std_readings'][0]).replace('.',','),str(results['dut_readings'][0]).replace('.',','),str(results['std_readings'][1]).replace('.',','),str(results['dut_readings'][1]).replace('.',','),str(results['std_readings'][2]).replace('.',','),str(results['dut_readings'][2]).replace('.',','),str(results['std_readings'][3]).replace('.',','),str(results['dut_readings'][3]).replace('.',','),str(results['std_readings'][4]).replace('.',','),str(results['dut_readings'][4]).replace('.',','),str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',','),str(ca_data.temperature).replace('.',','),str(ca_data.humidity).replace('.',','),str(ca_data.pressure).replace('.',',')]);
-        registro.writerow([results['timestamp'],str(results['std_readings'][0]).replace('.',','),str(results['dut_readings'][0]).replace('.',','),str(results['std_readings'][1]).replace('.',','),str(results['dut_readings'][1]).replace('.',','),str(results['std_readings'][2]).replace('.',','),str(results['dut_readings'][2]).replace('.',','),str(results['std_readings'][3]).replace('.',','),str(results['dut_readings'][3]).replace('.',','),str(results['std_readings'][4]).replace('.',','),str(results['dut_readings'][4]).replace('.',','),str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',',')]);
+        row = [results['timestamp'],str(results['std_readings'][0]).replace('.',','),str(results['dut_readings'][0]).replace('.',','),str(results['std_readings'][1]).replace('.',','),str(results['dut_readings'][1]).replace('.',','),str(results['std_readings'][2]).replace('.',','),str(results['dut_readings'][2]).replace('.',','),str(results['std_readings'][3]).replace('.',','),str(results['dut_readings'][3]).replace('.',','),str(results['std_readings'][4]).replace('.',','),str(results['dut_readings'][4]).replace('.',','),str(results['dif']).replace('.',','),str(results['Delta']).replace('.',','),str(vdc_atual).replace('.',',')]
+        if use_bme280 and ca_data is not None:
+            row.extend([str(ca_data.temperature).replace('.',','),str(ca_data.humidity).replace('.',','),str(ca_data.pressure).replace('.',',')])
+        registro.writerow(row)
 
 
     csvfile.close();
@@ -653,8 +693,9 @@ def registro_media(registro_filename,diferenca):
 def main():
     try:
         global freq;
-        #print("Inicializando BME280 (condições ambientais)")
-        #bme280_init()
+        if use_bme280:
+            print("Inicializando BME280 (condições ambientais)")
+            bme280_init()
         print("Inicializando os intrumentos...")
         instrument_init()  # inicializa os instrumentos
         print("Colocando fontes em OPERATE...")
@@ -702,20 +743,20 @@ def main():
                 print("Diferença ac-dc: {:5.2f}".format(results['dif']))               
                 print("Delta: {:5.2f}".format(results['Delta']))
                 print("Data / hora: "+results['timestamp']);
-                #ca_data = bme280_read();
-                #print("Temperatura: {:5.2f} ºC".format(ca_data.temperature));
-                #print("Umidade Relativa: {:5.2f} %u.r.".format(ca_data.humidity));
-                #print("Pressão atmosférica: {:5.2f} hPa".format(ca_data.pressure));
+                ca_data = None
+                if use_bme280:
+                    ca_data = bme280_read();
+                    print("Temperatura: {:5.2f} ºC".format(ca_data.temperature));
+                    print("Umidade Relativa: {:5.2f} %u.r.".format(ca_data.humidity));
+                    print("Pressão atmosférica: {:5.2f} hPa".format(ca_data.pressure));
                 # original: 50 ppm
                 # usando gerador agilent: 1000 ppm (ou 0,1%) (estabilidade e resolucao nao permite criterio tao  rigido)
-                # TODO: criterio de exclusao configuravel no arquivo .ini
-                if abs(results['Delta']) > 150:               # se o ponto não passa no critério de descarte, repetir medição
-                    print("Delta > 100 ppm. Ponto descartado!")
+                if abs(results['Delta']) > delta_max_ppm:               # se o ponto não passa no critério de descarte, repetir medição
+                    print("Delta > {:.1f} ppm. Ponto descartado!".format(delta_max_ppm))
                 else:
                     diff_acdc.append(results['dif']);
                     Delta.append(results['Delta']);
-                    #registro_linha(filename,results,vdc_atual,ca_data);
-                    registro_linha(filename,results,vdc_atual);
+                    registro_linha(filename,results,vdc_atual,ca_data);
 
                     i += 1;               
                 vdc_atual = results['adj_dc'];              # aplica o ajuste DC
