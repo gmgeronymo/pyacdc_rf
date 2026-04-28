@@ -1,5 +1,5 @@
 # pyAC-DC.py
-# Programa para a medição de diferença AC-DC em conversores térmicos (TCs)
+# Programa para a medição de diferença RF-AC em conversores térmicos (TCs)
 # O programa aceita TCs com saída em tensão, frequência e resistência.
 # modificado em outubro de 2023 para calibrar TVCs Fluke A55 acima de 1 MHz
 # usando gerador Keysight 33600A como fonte (AC e RF)
@@ -185,8 +185,6 @@ class MeasurementUI:
         self.refresh()
 
     def add_cycle_reading(self, cycle_index, std_value, dut_value):
-        cycle_name = cycle_csv_labels[cycle_index]
-        self.set_status("Executando ciclo: {}".format(cycle_name))
         if cycle_index < len(self.cycle_rows):
             self.cycle_rows[cycle_index]['std'] = std_value
             self.cycle_rows[cycle_index]['dut'] = dut_value
@@ -210,8 +208,7 @@ class MeasurementUI:
         layout = Layout()
         layout.split_column(
             Layout(name="top", size=16),
-            Layout(name="mid", size=14),
-            Layout(name="bottom")
+            Layout(name="mid", size=14)
         )
 
         layout["mid"].split_row(
@@ -272,8 +269,8 @@ class MeasurementUI:
         layout["left"].update(Panel(cycle_table, title="Leituras Instantaneas", border_style="green"))
 
         results_table = Table(show_header=True, header_style="bold")
-        results_table.add_column("Dif. AC-DC [ppm]", justify="right")
-        results_table.add_column("Delta [ppm]", justify="right")
+        results_table.add_column("Dif. RF-AC [µV/V]", justify="right")
+        results_table.add_column("Delta [µV/V]", justify="right")
         results_table.add_column("Status", justify="center")
         for row in self.results_rows:
             status = "[red]DESCARTADO[/red]" if row['discarded'] else "[green]ACEITO[/green]"
@@ -283,24 +280,6 @@ class MeasurementUI:
                 status,
             )
         layout["right"].update(Panel(results_table, title="Resultados da Medicao", border_style="magenta"))
-
-        trend = Table(show_header=False)
-        trend.add_column("t")
-        if self.results_rows:
-            vals = [r['dif'] for r in self.results_rows[-20:] if not r['discarded']]
-            if vals:
-                vmin = min(vals)
-                vmax = max(vals)
-                width = 50
-                for idx, v in enumerate(vals, 1):
-                    pos = 0 if vmax == vmin else int((v - vmin) / (vmax - vmin) * (width - 1))
-                    line = " " * pos + "*"
-                    trend.add_row("{:>2} {}".format(idx, line))
-            else:
-                trend.add_row("Sem pontos aceitos")
-        else:
-            trend.add_row("Aguardando resultados")
-        layout["bottom"].update(Panel(trend, title="Tendencia da Diferenca AC-DC", border_style="blue"))
         return layout
 
 #-------------------------------------------------------------------------------
@@ -524,15 +503,11 @@ def ler_dut():
 # aceita como parâmetro o vetor com as leituras do padrão
 # escreve na tela a última leitura da saída do TC padrão
 def print_std(std_readings):
-    if ui is not None:
-        ui.set_status("Leitura STD: {:5.6f} mV".format(float(std_readings[-1].strip())*1000))
     return
 #-------------------------------------------------------------------------------
 # aceita como parâmetro o vetor com as leituras do objeto
 # escreve na tela a última leitura da saída do TC objeto
 def print_dut(dut_readings):
-    if ui is not None:
-        ui.set_status("Leitura DUT: {:5.6f} mV".format(float(dut_readings[-1].strip())*1000))
     return
 #-------------------------------------------------------------------------------
 # função aquecimento()
@@ -659,11 +634,11 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
             )
 
     for i, cycle_type in enumerate(cycle_sequence):
+        cycle_name = "RF" if cycle_type == 'RF' else "AC 100 kHz"
         if i == 0 and (ciclo_ac != []):
-            if cycle_type == 'RF':
-                print("Ciclo RF")
-            else:
-                print("Ciclo AC 100 kHz")
+            print("Ciclo {}".format(cycle_name))
+            if ui is not None:
+                ui.set_status("Executando ciclo: {}".format(cycle_name))
             std_readings.append(ciclo_ac[0])
             dut_readings.append(ciclo_ac[1])
             if ui is not None:
@@ -679,6 +654,9 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
             sw.write_raw(dc)
             print("Ciclo AC 100 kHz")
 
+        if ui is not None:
+            ui.set_status("Executando ciclo: {}".format(cycle_name))
+
         espera(wait_time)
         std_readings.append(ler_std())
         dut_readings.append(ler_dut())
@@ -691,14 +669,14 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
     return {'std_readings':std_readings, 'dut_readings':dut_readings}
 #-------------------------------------------------------------------------------
 # função acdc_calc(readings,N,vdc_atual)
-# Calcula a diferença AC-DC a partir dos dados obtidos com a funcao measure()
+# Calcula a diferença RF-AC a partir dos dados obtidos com a funcao measure()
 # aceita como parâmetros de entrada:
 # readings - array com as leituras obtidas para o padrão e para o objeto
 # N - vetor com os valores calculados de N (padrão e objeto)
 # vdc_atual - valor de tensão DC ajustado para o último ciclo.
 def acdc_calc(readings,N,vdc_atual):
     # x -> padrao; y -> objeto
-    print("Calculando diferença ac-dc...")
+    print("Calculando diferença RF-AC...")
     n_X = N[0]; # n do padrão
     n_Y = N[2]; # n do objeto
     # extrai os dados de leituras do padrão
@@ -713,7 +691,7 @@ def acdc_calc(readings,N,vdc_atual):
     # Variáveis auxiliares X e Y
     X = Xac/Xdc - 1;
     Y = Yac/Ydc - 1;
-    # diferença AC-DC medida:
+    # diferença RF-AC medida:
     # denominador (1 + Y/n_Y) removido; sugestao H. Laiz durante peer review.
     delta_m = 1e6 * (X/n_X - Y/n_Y);
     # critério para repetir a medição - diferença entre Yac e Ydc    
