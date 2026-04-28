@@ -150,8 +150,17 @@ class MeasurementUI:
         self.refresh()
 
     def set_frequency(self, frequency_mhz):
-        self.current_frequency = "{:.3f} MHz".format(frequency_mhz)
+        self.current_frequency = "{:.0f} MHz".format(frequency_mhz)
+        self.start_cycle_table()
+        self.refresh()
+
+    def start_cycle_table(self, first_std=None, first_dut=None):
         self.cycle_rows = []
+        for label in cycle_csv_labels:
+            self.cycle_rows.append({'cycle': label, 'std': None, 'dut': None})
+        if first_std is not None and first_dut is not None and self.cycle_rows:
+            self.cycle_rows[0]['std'] = first_std
+            self.cycle_rows[0]['dut'] = first_dut
         self.refresh()
 
     def set_program(self, frequencies_mhz, vdc_programmed, vac_programmed):
@@ -175,14 +184,12 @@ class MeasurementUI:
         self.n_dut = "{:.3f}".format(n_dut)
         self.refresh()
 
-    def add_cycle_reading(self, cycle_name, std_value, dut_value):
-        self.cycle_rows.append({
-            'cycle': cycle_name,
-            'std': std_value,
-            'dut': dut_value,
-        })
-        if len(self.cycle_rows) > 20:
-            self.cycle_rows = self.cycle_rows[-20:]
+    def add_cycle_reading(self, cycle_index, std_value, dut_value):
+        cycle_name = cycle_csv_labels[cycle_index]
+        self.set_status("Executando ciclo: {}".format(cycle_name))
+        if cycle_index < len(self.cycle_rows):
+            self.cycle_rows[cycle_index]['std'] = std_value
+            self.cycle_rows[cycle_index]['dut'] = dut_value
         self.refresh()
 
     def add_result(self, dif_value, delta_value, discarded):
@@ -225,7 +232,7 @@ class MeasurementUI:
             if self.current_frequency != "-":
                 current = float(self.current_frequency.split()[0])
             for f in self.programmed_frequencies_mhz:
-                label = "{:.3f}".format(f)
+                label = "{:.0f}".format(f)
                 if current is not None and abs(f - current) < 1e-9:
                     label = "[bold cyan]> {} <[/bold cyan]".format(label)
                 program_table.add_row(label)
@@ -252,13 +259,15 @@ class MeasurementUI:
 
         cycle_table = Table(show_header=True, header_style="bold")
         cycle_table.add_column("Ciclo", justify="left")
-        cycle_table.add_column("MJ1 [mV]", justify="right", style="green")
-        cycle_table.add_column("MJ2 [mV]", justify="right", style="green")
+        cycle_table.add_column("STD [mV]", justify="right", style="green")
+        cycle_table.add_column("DUT [mV]", justify="right", style="green")
         for row in self.cycle_rows:
+            std_value = "-" if row['std'] is None else "{:,.6f}".format(row['std']).replace(',', 'X').replace('.', ',').replace('X', '.')
+            dut_value = "-" if row['dut'] is None else "{:,.6f}".format(row['dut']).replace(',', 'X').replace('.', ',').replace('X', '.')
             cycle_table.add_row(
                 row['cycle'],
-                "{:,.6f}".format(row['std']).replace(',', 'X').replace('.', ',').replace('X', '.'),
-                "{:,.6f}".format(row['dut']).replace(',', 'X').replace('.', ',').replace('X', '.'),
+                std_value,
+                dut_value,
             )
         layout["left"].update(Panel(cycle_table, title="Leituras Instantaneas", border_style="green"))
 
@@ -639,6 +648,16 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
     set_ac_voltage_and_frequency(vdc_atual, 100000)
     # Iniciar medição
     espera(2); # esperar 2 segundos
+
+    if ui is not None:
+        if ciclo_ac == []:
+            ui.start_cycle_table()
+        else:
+            ui.start_cycle_table(
+                float(str(ciclo_ac[0]).strip()) * 1000,
+                float(str(ciclo_ac[1]).strip()) * 1000,
+            )
+
     for i, cycle_type in enumerate(cycle_sequence):
         if i == 0 and (ciclo_ac != []):
             if cycle_type == 'RF':
@@ -648,11 +667,7 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
             std_readings.append(ciclo_ac[0])
             dut_readings.append(ciclo_ac[1])
             if ui is not None:
-                ui.add_cycle_reading(
-                    "RF" if cycle_type == 'RF' else "AC 100 kHz",
-                    float(str(ciclo_ac[0]).strip()) * 1000,
-                    float(str(ciclo_ac[1]).strip()) * 1000,
-                )
+                ui.add_cycle_reading(i, float(str(ciclo_ac[0]).strip()) * 1000, float(str(ciclo_ac[1]).strip()) * 1000)
             print_std(std_readings)
             print_dut(dut_readings)
             continue
@@ -668,11 +683,7 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
         std_readings.append(ler_std())
         dut_readings.append(ler_dut())
         if ui is not None:
-            ui.add_cycle_reading(
-                "RF" if cycle_type == 'RF' else "AC 100 kHz",
-                float(std_readings[-1].strip()) * 1000,
-                float(dut_readings[-1].strip()) * 1000,
-            )
+            ui.add_cycle_reading(i, float(std_readings[-1].strip()) * 1000, float(dut_readings[-1].strip()) * 1000)
         print_std(std_readings)
         print_dut(dut_readings)
 
