@@ -115,12 +115,17 @@ class MeasurementUI:
         self.status = "Inicializando..."
         self.wait_message = "-"
         self.current_frequency = "-"
+        self.current_vdc = "-"
+        self.current_vac = "-"
+        self.programmed_frequencies_mhz = []
+        self.programmed_vdc = vdc_nominal
+        self.programmed_vac = vac_nominal
         self.cycle_rows = []
         self.results_rows = []
         self.live = None
 
     def start(self):
-        self.live = Live(self.render(), refresh_per_second=8, console=console)
+        self.live = Live(self.render(), refresh_per_second=4, auto_refresh=False, console=console)
         self.live.start()
 
     def stop(self):
@@ -145,6 +150,17 @@ class MeasurementUI:
         self.cycle_rows = []
         self.refresh()
 
+    def set_program(self, frequencies_mhz, vdc_programmed, vac_programmed):
+        self.programmed_frequencies_mhz = frequencies_mhz[:]
+        self.programmed_vdc = vdc_programmed
+        self.programmed_vac = vac_programmed
+        self.refresh()
+
+    def set_setpoints(self, current_vdc, current_vac):
+        self.current_vdc = "{:.4f} V".format(current_vdc)
+        self.current_vac = "{:.4f} V".format(current_vac)
+        self.refresh()
+
     def add_cycle_reading(self, cycle_name, std_value, dut_value):
         self.cycle_rows.append({
             'cycle': cycle_name,
@@ -167,12 +183,12 @@ class MeasurementUI:
 
     def refresh(self):
         if self.live is not None:
-            self.live.update(self.render())
+            self.live.update(self.render(), refresh=True)
 
     def render(self):
         layout = Layout()
         layout.split_column(
-            Layout(name="top", size=5),
+            Layout(name="top", size=12),
             Layout(name="bottom")
         )
         layout["bottom"].split_row(
@@ -180,12 +196,35 @@ class MeasurementUI:
             Layout(name="right", ratio=2)
         )
 
-        status_text = "Freq.: {}\nEspera: {}\n{}".format(
+        status_text = "Freq. atual: {}\nVdc atual: {}\nVac atual: {}\nEspera: {}\n{}".format(
             self.current_frequency,
+            self.current_vdc,
+            self.current_vac,
             self.wait_message,
             self.status,
         )
-        layout["top"].update(Panel(status_text, title="Status do Sistema", border_style="cyan"))
+        program_table = Table(show_header=True, header_style="bold")
+        program_table.add_column("Freq. programadas [MHz]", justify="right")
+        if self.programmed_frequencies_mhz:
+            current = None
+            if self.current_frequency != "-":
+                current = float(self.current_frequency.split()[0])
+            for f in self.programmed_frequencies_mhz:
+                label = "{:.3f}".format(f)
+                if current is not None and abs(f - current) < 1e-9:
+                    label = "[bold cyan]> {} <[/bold cyan]".format(label)
+                program_table.add_row(label)
+        else:
+            program_table.add_row("-")
+        program_table.add_row(" ")
+        program_table.add_row("Vdc nominal: {:.4f} V".format(self.programmed_vdc))
+        program_table.add_row("Vac nominal: {:.4f} V".format(self.programmed_vac))
+
+        top_layout = Layout()
+        top_layout.split_row(Layout(name="status", ratio=2), Layout(name="program", ratio=1))
+        top_layout["status"].update(Panel(status_text, title="Status do Sistema", border_style="cyan"))
+        top_layout["program"].update(Panel(program_table, title="Programa da Medicao", border_style="yellow"))
+        layout["top"].update(top_layout)
 
         cycle_table = Table(show_header=True, header_style="bold")
         cycle_table.add_column("Ciclo", justify="left")
@@ -204,7 +243,7 @@ class MeasurementUI:
         results_table.add_column("Delta [ppm]", justify="right")
         results_table.add_column("Status", justify="center")
         for row in self.results_rows:
-            status = "DESCARTADO" if row['discarded'] else "ACEITO"
+            status = "[red]DESCARTADO[/red]" if row['discarded'] else "[green]ACEITO[/green]"
             results_table.add_row(
                 "{:,.2f}".format(row['dif']).replace(',', 'X').replace('.', ',').replace('X', '.'),
                 "{:,.2f}".format(row['delta']).replace(',', 'X').replace('.', ',').replace('X', '.'),
@@ -809,6 +848,7 @@ def main():
         ui = MeasurementUI()
         ui.start()
         ui.set_status("Inicializando sistema")
+        ui.set_program([float(v.strip()) for v in freq_array], vdc_nominal, vac_nominal)
         if use_bme280:
             ui.set_status("Inicializando BME280 (condições ambientais)")
             bme280_init()
@@ -833,6 +873,7 @@ def main():
             ui.set_status("Calculando equilibrio AC")
             vac_atual = equilibrio();  # calcula a tensão AC de equilíbrio
             ui.set_status("Vac aplicado: {:5.3f} V".format(vac_atual))
+            ui.set_setpoints(vdc_nominal, vac_atual)
             registro_frequencia(filename,value,n_array,vac_atual);  # inicia o registro para a frequencia atual
             first_measure = True;   # flag para determinar se é a primeira repeticao
 
@@ -846,6 +887,7 @@ def main():
             i = 0;
             while (i < repeticoes):  # inicia as repetições da medição
                 ui.set_status("Repeticao {}/{} | Vdc {:5.3f} V".format(i+1, repeticoes, vdc_atual))
+                ui.set_setpoints(vdc_atual, vac_atual)
                 if first_measure:    # testa se é a primeira medição
                     ciclo_ac = [];
                     first_measure = False
