@@ -117,6 +117,10 @@ class MeasurementUI:
         self.current_frequency = "-"
         self.current_vdc = "-"
         self.current_vac = "-"
+        self.current_repeat = "-"
+        self.total_repeats = repeticoes
+        self.n_std = "-"
+        self.n_dut = "-"
         self.programmed_frequencies_mhz = []
         self.programmed_vdc = vdc_nominal
         self.programmed_vac = vac_nominal
@@ -161,6 +165,16 @@ class MeasurementUI:
         self.current_vac = "{:.4f} V".format(current_vac)
         self.refresh()
 
+    def set_repetition(self, current_repeat, total_repeats):
+        self.current_repeat = str(current_repeat)
+        self.total_repeats = total_repeats
+        self.refresh()
+
+    def set_n_values(self, n_std, n_dut):
+        self.n_std = "{:.3f}".format(n_std)
+        self.n_dut = "{:.3f}".format(n_dut)
+        self.refresh()
+
     def add_cycle_reading(self, cycle_name, std_value, dut_value):
         self.cycle_rows.append({
             'cycle': cycle_name,
@@ -188,19 +202,20 @@ class MeasurementUI:
     def render(self):
         layout = Layout()
         layout.split_column(
-            Layout(name="top", size=12),
+            Layout(name="top", size=16),
+            Layout(name="mid", size=14),
             Layout(name="bottom")
         )
-        layout["bottom"].split_row(
+
+        layout["mid"].split_row(
             Layout(name="left", ratio=2),
             Layout(name="right", ratio=2)
         )
 
-        status_text = "Freq. atual: {}\nVdc atual: {}\nVac atual: {}\nEspera: {}\n{}".format(
+        status_text = "Frequencia atual: {}\nTensao AC atual: {}\nTensao RF atual: {}\nMensagem do sistema:\n{}".format(
             self.current_frequency,
             self.current_vdc,
             self.current_vac,
-            self.wait_message,
             self.status,
         )
         program_table = Table(show_header=True, header_style="bold")
@@ -221,22 +236,31 @@ class MeasurementUI:
         program_table.add_row("Vac nominal: {:.4f} V".format(self.programmed_vac))
 
         top_layout = Layout()
-        top_layout.split_row(Layout(name="status", ratio=2), Layout(name="program", ratio=1))
-        top_layout["status"].update(Panel(status_text, title="Status do Sistema", border_style="cyan"))
+        top_layout.split_row(Layout(name="status", ratio=2), Layout(name="program", ratio=1), Layout(name="params", ratio=1))
+        top_layout["status"].update(Panel(status_text, title="Controle das Medicoes", border_style="cyan"))
         top_layout["program"].update(Panel(program_table, title="Programa da Medicao", border_style="yellow"))
+
+        param_table = Table(show_header=False)
+        param_table.add_column("k", style="bold")
+        param_table.add_column("v", justify="right")
+        param_table.add_row("Espera", "[green]{}[/green]".format(self.wait_message))
+        param_table.add_row("Repeticoes", "[green]{}/{}[/green]".format(self.current_repeat, self.total_repeats))
+        param_table.add_row("n Padrao", self.n_std)
+        param_table.add_row("n Objeto", self.n_dut)
+        top_layout["params"].update(Panel(param_table, title="Parametros", border_style="white"))
         layout["top"].update(top_layout)
 
         cycle_table = Table(show_header=True, header_style="bold")
         cycle_table.add_column("Ciclo", justify="left")
-        cycle_table.add_column("STD [mV]", justify="right")
-        cycle_table.add_column("DUT [mV]", justify="right")
+        cycle_table.add_column("MJ1 [mV]", justify="right", style="green")
+        cycle_table.add_column("MJ2 [mV]", justify="right", style="green")
         for row in self.cycle_rows:
             cycle_table.add_row(
                 row['cycle'],
                 "{:,.6f}".format(row['std']).replace(',', 'X').replace('.', ',').replace('X', '.'),
                 "{:,.6f}".format(row['dut']).replace(',', 'X').replace('.', ',').replace('X', '.'),
             )
-        layout["left"].update(Panel(cycle_table, title="Leituras por Ciclo", border_style="green"))
+        layout["left"].update(Panel(cycle_table, title="Leituras Instantaneas", border_style="green"))
 
         results_table = Table(show_header=True, header_style="bold")
         results_table.add_column("Dif. AC-DC [ppm]", justify="right")
@@ -249,7 +273,25 @@ class MeasurementUI:
                 "{:,.2f}".format(row['delta']).replace(',', 'X').replace('.', ',').replace('X', '.'),
                 status,
             )
-        layout["right"].update(Panel(results_table, title="Resultados", border_style="magenta"))
+        layout["right"].update(Panel(results_table, title="Resultados da Medicao", border_style="magenta"))
+
+        trend = Table(show_header=False)
+        trend.add_column("t")
+        if self.results_rows:
+            vals = [r['dif'] for r in self.results_rows[-20:] if not r['discarded']]
+            if vals:
+                vmin = min(vals)
+                vmax = max(vals)
+                width = 50
+                for idx, v in enumerate(vals, 1):
+                    pos = 0 if vmax == vmin else int((v - vmin) / (vmax - vmin) * (width - 1))
+                    line = " " * pos + "*"
+                    trend.add_row("{:>2} {}".format(idx, line))
+            else:
+                trend.add_row("Sem pontos aceitos")
+        else:
+            trend.add_row("Aguardando resultados")
+        layout["bottom"].update(Panel(trend, title="Tendencia da Diferenca AC-DC", border_style="blue"))
         return layout
 
 #-------------------------------------------------------------------------------
@@ -849,6 +891,7 @@ def main():
         ui.start()
         ui.set_status("Inicializando sistema")
         ui.set_program([float(v.strip()) for v in freq_array], vdc_nominal, vac_nominal)
+        ui.set_repetition(0, repeticoes)
         if use_bme280:
             ui.set_status("Inicializando BME280 (condições ambientais)")
             bme280_init()
@@ -869,6 +912,7 @@ def main():
             ui.set_status("Medindo N")
             n_array = n_measure(4);  # 4 repetições para o cálculo do N
             n_value = n_array['results'];
+            ui.set_n_values(n_value[0], n_value[2])
             ui.set_status("N STD {:.2f} (dp {:.2f}) | N DUT {:.2f} (dp {:.2f})".format(n_value[0], n_value[1], n_value[2], n_value[3]))
             ui.set_status("Calculando equilibrio AC")
             vac_atual = equilibrio();  # calcula a tensão AC de equilíbrio
@@ -888,6 +932,7 @@ def main():
             while (i < repeticoes):  # inicia as repetições da medição
                 ui.set_status("Repeticao {}/{} | Vdc {:5.3f} V".format(i+1, repeticoes, vdc_atual))
                 ui.set_setpoints(vdc_atual, vac_atual)
+                ui.set_repetition(i+1, repeticoes)
                 if first_measure:    # testa se é a primeira medição
                     ciclo_ac = [];
                     first_measure = False
