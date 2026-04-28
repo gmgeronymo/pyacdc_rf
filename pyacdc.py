@@ -46,6 +46,11 @@ import configparser
 import time
 import numpy
 import csv
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
@@ -101,6 +106,113 @@ if use_bme280:
     import smbus2
     import bme280
 
+console = Console()
+ui = None
+
+
+class MeasurementUI:
+    def __init__(self):
+        self.status = "Inicializando..."
+        self.wait_message = "-"
+        self.current_frequency = "-"
+        self.cycle_rows = []
+        self.results_rows = []
+        self.live = None
+
+    def start(self):
+        self.live = Live(self.render(), refresh_per_second=8, console=console)
+        self.live.start()
+
+    def stop(self):
+        if self.live is not None:
+            self.live.stop()
+            self.live = None
+
+    def set_status(self, message):
+        self.status = message
+        self.refresh()
+
+    def set_wait(self, message):
+        self.wait_message = message
+        self.refresh()
+
+    def clear_wait(self):
+        self.wait_message = "-"
+        self.refresh()
+
+    def set_frequency(self, frequency_mhz):
+        self.current_frequency = "{:.3f} MHz".format(frequency_mhz)
+        self.cycle_rows = []
+        self.refresh()
+
+    def add_cycle_reading(self, cycle_name, std_value, dut_value):
+        self.cycle_rows.append({
+            'cycle': cycle_name,
+            'std': std_value,
+            'dut': dut_value,
+        })
+        if len(self.cycle_rows) > 20:
+            self.cycle_rows = self.cycle_rows[-20:]
+        self.refresh()
+
+    def add_result(self, dif_value, delta_value, discarded):
+        self.results_rows.append({
+            'dif': dif_value,
+            'delta': delta_value,
+            'discarded': discarded,
+        })
+        if len(self.results_rows) > 50:
+            self.results_rows = self.results_rows[-50:]
+        self.refresh()
+
+    def refresh(self):
+        if self.live is not None:
+            self.live.update(self.render())
+
+    def render(self):
+        layout = Layout()
+        layout.split_column(
+            Layout(name="top", size=5),
+            Layout(name="bottom")
+        )
+        layout["bottom"].split_row(
+            Layout(name="left", ratio=2),
+            Layout(name="right", ratio=2)
+        )
+
+        status_text = "Freq.: {}\nEspera: {}\n{}".format(
+            self.current_frequency,
+            self.wait_message,
+            self.status,
+        )
+        layout["top"].update(Panel(status_text, title="Status do Sistema", border_style="cyan"))
+
+        cycle_table = Table(show_header=True, header_style="bold")
+        cycle_table.add_column("Ciclo", justify="left")
+        cycle_table.add_column("STD [mV]", justify="right")
+        cycle_table.add_column("DUT [mV]", justify="right")
+        for row in self.cycle_rows:
+            cycle_table.add_row(
+                row['cycle'],
+                "{:,.6f}".format(row['std']).replace(',', 'X').replace('.', ',').replace('X', '.'),
+                "{:,.6f}".format(row['dut']).replace(',', 'X').replace('.', ',').replace('X', '.'),
+            )
+        layout["left"].update(Panel(cycle_table, title="Leituras por Ciclo", border_style="green"))
+
+        results_table = Table(show_header=True, header_style="bold")
+        results_table.add_column("Dif. AC-DC [ppm]", justify="right")
+        results_table.add_column("Delta [ppm]", justify="right")
+        results_table.add_column("Status", justify="center")
+        for row in self.results_rows:
+            status = "DESCARTADO" if row['discarded'] else "ACEITO"
+            results_table.add_row(
+                "{:,.2f}".format(row['dif']).replace(',', 'X').replace('.', ',').replace('X', '.'),
+                "{:,.2f}".format(row['delta']).replace(',', 'X').replace('.', ',').replace('X', '.'),
+                status,
+            )
+        layout["right"].update(Panel(results_table, title="Resultados", border_style="magenta"))
+        return layout
+
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
@@ -113,8 +225,14 @@ if use_bme280:
 # interrupção de teclado. A função quebra a chamada dessa função em várias
 # chamadas de 0,1 segundo.
 def espera(segundos):
-    for i in range(int(segundos * 10)):
-        time.sleep(0.1)    
+    remaining = int(segundos)
+    while remaining > 0:
+        if ui is not None:
+            ui.set_wait("{} s".format(remaining))
+        time.sleep(1)
+        remaining -= 1
+    if ui is not None:
+        ui.clear_wait()
     return
 #-------------------------------------------------------------------------------
 # inicializar bme280
@@ -316,13 +434,15 @@ def ler_dut():
 # aceita como parâmetro o vetor com as leituras do padrão
 # escreve na tela a última leitura da saída do TC padrão
 def print_std(std_readings):
-    print("STD [mV] {:5.6f}".format(float(std_readings[-1].strip())*1000))
+    if ui is not None:
+        ui.set_status("Leitura STD: {:5.6f} mV".format(float(std_readings[-1].strip())*1000))
     return
 #-------------------------------------------------------------------------------
 # aceita como parâmetro o vetor com as leituras do objeto
 # escreve na tela a última leitura da saída do TC objeto
 def print_dut(dut_readings):
-    print("DUT [mV] {:5.6f}".format(float(dut_readings[-1].strip())*1000))
+    if ui is not None:
+        ui.set_status("Leitura DUT: {:5.6f} mV".format(float(dut_readings[-1].strip())*1000))
     return
 #-------------------------------------------------------------------------------
 # função aquecimento()
@@ -446,6 +566,12 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
                 print("Ciclo AC 100 kHz")
             std_readings.append(ciclo_ac[0])
             dut_readings.append(ciclo_ac[1])
+            if ui is not None:
+                ui.add_cycle_reading(
+                    "RF" if cycle_type == 'RF' else "AC 100 kHz",
+                    float(str(ciclo_ac[0]).strip()) * 1000,
+                    float(str(ciclo_ac[1]).strip()) * 1000,
+                )
             print_std(std_readings)
             print_dut(dut_readings)
             continue
@@ -460,6 +586,12 @@ def measure(vdc_atual,vac_atual,ciclo_ac):
         espera(wait_time)
         std_readings.append(ler_std())
         dut_readings.append(ler_dut())
+        if ui is not None:
+            ui.add_cycle_reading(
+                "RF" if cycle_type == 'RF' else "AC 100 kHz",
+                float(std_readings[-1].strip()) * 1000,
+                float(dut_readings[-1].strip()) * 1000,
+            )
         print_std(std_readings)
         print_dut(dut_readings)
 
@@ -671,48 +803,49 @@ def registro_media(registro_filename,diferenca):
 # Programa principal
 #-------------------------------------------------------------------------------
 def main():
+    global ui
     try:
         global freq;
+        ui = MeasurementUI()
+        ui.start()
+        ui.set_status("Inicializando sistema")
         if use_bme280:
-            print("Inicializando BME280 (condições ambientais)")
+            ui.set_status("Inicializando BME280 (condições ambientais)")
             bme280_init()
-        print("Inicializando os intrumentos...")
+        ui.set_status("Inicializando instrumentos")
         instrument_init()  # inicializa os instrumentos
-        print("Colocando fontes em OPERATE...")
+        ui.set_status("Colocando fontes em OPERATE")
         meas_init()        # inicializa a medição (coloca fontes em operate)
-        print("Criando arquivo de registro...")
+        ui.set_status("Criando arquivo de registro")
         filename = criar_registro();  # cria arquivo de registro
-        print("Arquivo "+filename+" criado com sucesso!")
-        print("Aquecimento...");   
+        ui.set_status("Arquivo {} criado".format(filename))
+        ui.set_status("Aquecimento")
         aquecimento(heating_time);  # inicia o aquecimento
         # fazer loop para cada valor de frequencia
         for value in freq_array:
             freq = float(value) * 1000000;
-            print("Iniciando a medição...")
-            print("V nominal: {:5.1f} V, f nominal: {:5.0f} MHz".format(vdc_nominal,freq/1e6));
-            print("Medindo o N...");           
+            ui.set_frequency(freq/1e6)
+            ui.set_status("Iniciando medicao em {:5.0f} MHz".format(freq/1e6))
+            ui.set_status("Medindo N")
             n_array = n_measure(4);  # 4 repetições para o cálculo do N
             n_value = n_array['results'];
-            print("N STD (média): {:5.2f}".format(n_value[0]))
-            print("N STD (desvio padrão): {:5.2f}".format(n_value[1]))
-            print("N DUT (média): {:5.2f}".format(n_value[2]))
-            print("N DUT (desvio padrão): {:5.2f}".format(n_value[3]))   
-            print("Equilibrio AC...");
+            ui.set_status("N STD {:.2f} (dp {:.2f}) | N DUT {:.2f} (dp {:.2f})".format(n_value[0], n_value[1], n_value[2], n_value[3]))
+            ui.set_status("Calculando equilibrio AC")
             vac_atual = equilibrio();  # calcula a tensão AC de equilíbrio
-            print("Vac aplicado: {:5.3f} V".format(vac_atual))
+            ui.set_status("Vac aplicado: {:5.3f} V".format(vac_atual))
             registro_frequencia(filename,value,n_array,vac_atual);  # inicia o registro para a frequencia atual
             first_measure = True;   # flag para determinar se é a primeira repeticao
 
             if vac_atual > 1.1*vac_nominal:  # verifica se a tensão AC de equilíbrio não é muito elevada
                 raise NameError('Tensão AC ajustada perigosamente alta!')
             
-            print("Iniciando medição...");
+            ui.set_status("Iniciando repeticoes da medicao")
             diff_acdc = [];
             Delta = [];
             vdc_atual = vdc_nominal;
             i = 0;
             while (i < repeticoes):  # inicia as repetições da medição
-                print ("Vdc aplicado: {:5.3f} V".format(vdc_atual))
+                ui.set_status("Repeticao {}/{} | Vdc {:5.3f} V".format(i+1, repeticoes, vdc_atual))
                 if first_measure:    # testa se é a primeira medição
                     ciclo_ac = [];
                     first_measure = False
@@ -720,20 +853,16 @@ def main():
                     ciclo_ac = [readings['std_readings'][-1], readings['dut_readings'][-1]];  # caso não seja, aproveitar o último ciclo
                 readings = measure(vdc_atual,vac_atual,ciclo_ac);                           # da repetição anterior
                 results = acdc_calc(readings,n_value,vdc_atual);                            # calcula a diferença ac-dc         
-                print("Diferença ac-dc: {:5.2f}".format(results['dif']))               
-                print("Delta: {:5.2f}".format(results['Delta']))
-                print("Data / hora: "+results['timestamp']);
                 ca_data = None
                 if use_bme280:
                     ca_data = bme280_read();
-                    print("Temperatura: {:5.2f} ºC".format(ca_data.temperature));
-                    print("Umidade Relativa: {:5.2f} %u.r.".format(ca_data.humidity));
-                    print("Pressão atmosférica: {:5.2f} hPa".format(ca_data.pressure));
                 # original: 50 ppm
                 # usando gerador agilent: 1000 ppm (ou 0,1%) (estabilidade e resolucao nao permite criterio tao  rigido)
                 if abs(results['Delta']) > delta_max_ppm:               # se o ponto não passa no critério de descarte, repetir medição
-                    print("Delta > {:.1f} ppm. Ponto descartado!".format(delta_max_ppm))
+                    ui.add_result(results['dif'], results['Delta'], True)
+                    ui.set_status("Ponto descartado: Delta {:.2f} ppm > {:.1f} ppm".format(results['Delta'], delta_max_ppm))
                 else:
+                    ui.add_result(results['dif'], results['Delta'], False)
                     diff_acdc.append(results['dif']);
                     Delta.append(results['Delta']);
                     registro_linha(filename,results,vdc_atual,ca_data);
@@ -743,21 +872,23 @@ def main():
                 if vdc_atual > 1.1*vdc_nominal:
                     raise NameError('Tensão DC ajustada perigosamente alta!')    
 
-            print("Medição concluída.")                      
-        
-            print("Resultados:")
-            print("Média: {:5.2f}".format(numpy.mean(diff_acdc)))
-            print("Desvio padrão: {:5.2f}".format(numpy.std(diff_acdc, ddof=1)))
-            print("Salvando arquivo...")
+            ui.set_status("Medição concluída | Média {:.2f} ppm | DP {:.2f} ppm".format(numpy.mean(diff_acdc), numpy.std(diff_acdc, ddof=1)))
             registro_media(filename,diff_acdc);             # salva a diferença ac-dc média para a frequência atual no registro
 
         stop_instruments();                                 # coloca as fontes em stand-by
-        print("Concluído.")
+        ui.set_status("Concluído")
+        time.sleep(1)
                 
     except:
-        stop_instruments()
+        try:
+            stop_instruments()
+        except Exception:
+            pass
         import traceback
         traceback.print_exc()
+    finally:
+        if ui is not None:
+            ui.stop()
         
 
 # execução do programa principal
