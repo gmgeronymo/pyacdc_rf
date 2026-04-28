@@ -490,7 +490,8 @@ def acdc_calc(readings,N,vdc_atual):
     X = Xac/Xdc - 1;
     Y = Yac/Ydc - 1;
     # diferença AC-DC medida:
-    delta_m = 1e6 * ((X/n_X - Y/n_Y)/(1 + Y/n_Y));
+    # denominador (1 + Y/n_Y) removido; sugestao H. Laiz durante peer review.
+    delta_m = 1e6 * (X/n_X - Y/n_Y);
     # critério para repetir a medição - diferença entre Yac e Ydc    
     Delta = 1e6 * ((Yac - Ydc)/Ydc);
     # ajuste da tensão DC para o próximo ciclo
