@@ -933,6 +933,7 @@ def main():
             ui.set_setpoints(vdc_nominal, vac_atual)
             registro_frequencia(filename,value,n_array,vac_atual);  # inicia o registro para a frequencia atual
             first_measure = True;   # flag para determinar se é a primeira repeticao
+            reuse_last_cycle = True
 
             if vac_atual > 1.1*vac_nominal:  # verifica se a tensão AC de equilíbrio não é muito elevada
                 raise NameError('Tensão AC ajustada perigosamente alta!')
@@ -950,7 +951,10 @@ def main():
                     ciclo_ac = [];
                     first_measure = False
                 else:
-                    ciclo_ac = [readings['std_readings'][-1], readings['dut_readings'][-1]];  # caso não seja, aproveitar o último ciclo
+                    if reuse_last_cycle:
+                        ciclo_ac = [readings['std_readings'][-1], readings['dut_readings'][-1]];  # caso não seja, aproveitar o último ciclo
+                    else:
+                        ciclo_ac = []
                 readings = measure(vdc_atual,vac_atual,ciclo_ac);                           # da repetição anterior
                 results = acdc_calc(readings,n_value,vdc_atual);                            # calcula a diferença ac-dc         
                 ca_data = None
@@ -961,11 +965,13 @@ def main():
                 if abs(results['Delta']) > delta_max_ppm:               # se o ponto não passa no critério de descarte, repetir medição
                     ui.add_result(results['dif'], results['Delta'], True)
                     ui.set_status("Ponto descartado: Delta {:.2f} µV/V > {:.1f} µV/V".format(results['Delta'], delta_max_ppm))
+                    reuse_last_cycle = (measurement_cycle != 'AC-RF-AC')
                 else:
                     ui.add_result(results['dif'], results['Delta'], False)
                     diff_acdc.append(results['dif']);
                     Delta.append(results['Delta']);
                     registro_linha(filename,results,vdc_atual,ca_data);
+                    reuse_last_cycle = True
 
                     i += 1;               
                 vdc_atual = results['adj_dc'];              # aplica o ajuste DC
