@@ -245,8 +245,8 @@ class MeasurementUI:
         else:
             program_table.add_row("-")
         program_table.add_row(" ")
-        program_table.add_row("Vdc nominal: {:.4f} V".format(self.programmed_vdc))
-        program_table.add_row("Vac nominal: {:.4f} V".format(self.programmed_vac))
+        program_table.add_row("Vac nominal: {:.4f} V".format(self.programmed_vdc))
+        program_table.add_row("Vrf nominal: {:.4f} V".format(self.programmed_vac))
 
         top_layout = Layout()
         top_layout.split_row(Layout(name="status", ratio=2), Layout(name="program", ratio=1), Layout(name="params", ratio=1))
@@ -265,8 +265,8 @@ class MeasurementUI:
 
         cycle_table = Table(show_header=True, header_style="bold")
         cycle_table.add_column("Ciclo", justify="left")
-        cycle_table.add_column("STD [mV]", justify="right", style="green")
-        cycle_table.add_column("DUT [mV]", justify="right", style="green")
+        cycle_table.add_column("STD [mV]", justify="left", style="green")
+        cycle_table.add_column("DUT [mV]", justify="left", style="green")
         for row in self.cycle_rows:
             std_value = "-" if row['std'] is None else "{:,.6f}".format(row['std']).replace(',', 'X').replace('.', ',').replace('X', '.')
             dut_value = "-" if row['dut'] is None else "{:,.6f}".format(row['dut']).replace(',', 'X').replace('.', ',').replace('X', '.')
@@ -740,14 +740,14 @@ def equilibrio():
         
     # Aplica o valor nominal
     sw.write_raw(dc);
-    print("Vdc nominal: +{:.3f} V".format(vdc_nominal))
+    print("Vac nominal: +{:.3f} V".format(vdc_nominal))
     espera(wait_time/2);
     set_rf_voltage_and_frequency(0.999*vac_nominal, freq)
     espera(wait_time/2);
     dut_readings.append(ler_dut())
     print_dut(dut_readings);
     # Aplica Vac - 0.1%
-    print("Vac nominal - 0.1%: +{:.3f} V".format(0.999*vac_nominal))
+    print("Vrf nominal - 0.1%: +{:.3f} V".format(0.999*vac_nominal))
     sw.write_raw(ac);
     espera(wait_time)
     dut_readings.append(ler_dut())
@@ -757,7 +757,7 @@ def equilibrio():
     set_rf_voltage_and_frequency(1.001*vac_nominal, freq)
     espera(2);
     # Aplica Vac + 0.1%
-    print("Vac nominal + 0.1%: +{:.3f} V".format(1.001*vac_nominal))
+    print("Vrf nominal + 0.1%: +{:.3f} V".format(1.001*vac_nominal))
     sw.write_raw(ac);
     espera(wait_time)
     dut_readings.append(ler_dut())
@@ -927,9 +927,9 @@ def main():
             n_value = n_array['results'];
             ui.set_n_values(n_value[0], n_value[2])
             ui.set_status("N STD {:.2f} (dp {:.2f}) | N DUT {:.2f} (dp {:.2f})".format(n_value[0], n_value[1], n_value[2], n_value[3]))
-            ui.set_status("Calculando equilibrio AC")
+            ui.set_status("Calculando equilibrio RF")
             vac_atual = equilibrio();  # calcula a tensão AC de equilíbrio
-            ui.set_status("Vac aplicado: {:5.3f} V".format(vac_atual))
+            ui.set_status("Vrf aplicado: {:5.3f} V".format(vac_atual))
             ui.set_setpoints(vdc_nominal, vac_atual)
             registro_frequencia(filename,value,n_array,vac_atual);  # inicia o registro para a frequencia atual
             first_measure = True;   # flag para determinar se é a primeira repeticao
@@ -944,7 +944,7 @@ def main():
             vdc_atual = vdc_nominal;
             i = 0;
             while (i < repeticoes):  # inicia as repetições da medição
-                ui.set_status("Repeticao {}/{} | Vdc {:5.3f} V".format(i+1, repeticoes, vdc_atual))
+                ui.set_status("Repeticao {}/{} | Vac {:5.3f} V".format(i+1, repeticoes, vdc_atual))
                 ui.set_setpoints(vdc_atual, vac_atual)
                 ui.set_repetition(i+1, repeticoes)
                 if first_measure:    # testa se é a primeira medição
@@ -976,7 +976,7 @@ def main():
                     i += 1;               
                 vdc_atual = results['adj_dc'];              # aplica o ajuste DC
                 if vdc_atual > 1.1*vdc_nominal:
-                    raise NameError('Tensão DC ajustada perigosamente alta!')    
+                    raise NameError('Tensão AC ajustada perigosamente alta!')    
 
             freq_mean = numpy.mean(diff_acdc)
             freq_std = numpy.std(diff_acdc, ddof=1)
