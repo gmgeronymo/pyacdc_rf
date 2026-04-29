@@ -126,6 +126,7 @@ class MeasurementUI:
         self.programmed_vac = vac_nominal
         self.cycle_rows = []
         self.results_rows = []
+        self.summary_rows = []
         self.live = None
 
     def start(self):
@@ -152,6 +153,7 @@ class MeasurementUI:
     def set_frequency(self, frequency_mhz):
         self.current_frequency = "{:.0f} MHz".format(frequency_mhz)
         self.start_cycle_table()
+        self.results_rows = []
         self.refresh()
 
     def start_cycle_table(self, first_std=None, first_dut=None):
@@ -196,8 +198,14 @@ class MeasurementUI:
             'delta': delta_value,
             'discarded': discarded,
         })
-        if len(self.results_rows) > 50:
-            self.results_rows = self.results_rows[-50:]
+        self.refresh()
+
+    def add_frequency_summary(self, frequency_mhz, mean_value, std_value):
+        self.summary_rows.append({
+            'frequency_mhz': frequency_mhz,
+            'mean': mean_value,
+            'std': std_value,
+        })
         self.refresh()
 
     def refresh(self):
@@ -208,12 +216,13 @@ class MeasurementUI:
         layout = Layout()
         layout.split_column(
             Layout(name="top", size=16),
-            Layout(name="mid", size=14)
+            Layout(name="mid", size=18),
+            Layout(name="bottom", size=10)
         )
 
         layout["mid"].split_row(
             Layout(name="left", ratio=2),
-            Layout(name="right", ratio=2)
+            Layout(name="right", ratio=3)
         )
 
         status_text = "Frequencia atual: {}\nTensao AC atual: {}\nTensao RF atual: {}\nMensagem do sistema:\n{}".format(
@@ -280,6 +289,21 @@ class MeasurementUI:
                 status,
             )
         layout["right"].update(Panel(results_table, title="Resultados da Medicao", border_style="magenta"))
+
+        summary_table = Table(show_header=True, header_style="bold")
+        summary_table.add_column("Frequencia [MHz]", justify="right")
+        summary_table.add_column("Media RF-AC [µV/V]", justify="right")
+        summary_table.add_column("Desvio padrao [µV/V]", justify="right")
+        if self.summary_rows:
+            for row in self.summary_rows:
+                summary_table.add_row(
+                    "{:.0f}".format(row['frequency_mhz']),
+                    "{:,.2f}".format(row['mean']).replace(',', 'X').replace('.', ',').replace('X', '.'),
+                    "{:,.2f}".format(row['std']).replace(',', 'X').replace('.', ',').replace('X', '.'),
+                )
+        else:
+            summary_table.add_row("-", "-", "-")
+        layout["bottom"].update(Panel(summary_table, title="Resumo da Medicao", border_style="blue"))
         return layout
 
 #-------------------------------------------------------------------------------
@@ -936,7 +960,7 @@ def main():
                 # usando gerador agilent: 1000 ppm (ou 0,1%) (estabilidade e resolucao nao permite criterio tao  rigido)
                 if abs(results['Delta']) > delta_max_ppm:               # se o ponto não passa no critério de descarte, repetir medição
                     ui.add_result(results['dif'], results['Delta'], True)
-                    ui.set_status("Ponto descartado: Delta {:.2f} ppm > {:.1f} ppm".format(results['Delta'], delta_max_ppm))
+                    ui.set_status("Ponto descartado: Delta {:.2f} µV/V > {:.1f} µV/V".format(results['Delta'], delta_max_ppm))
                 else:
                     ui.add_result(results['dif'], results['Delta'], False)
                     diff_acdc.append(results['dif']);
@@ -948,7 +972,10 @@ def main():
                 if vdc_atual > 1.1*vdc_nominal:
                     raise NameError('Tensão DC ajustada perigosamente alta!')    
 
-            ui.set_status("Medição concluída | Média {:.2f} ppm | DP {:.2f} ppm".format(numpy.mean(diff_acdc), numpy.std(diff_acdc, ddof=1)))
+            freq_mean = numpy.mean(diff_acdc)
+            freq_std = numpy.std(diff_acdc, ddof=1)
+            ui.add_frequency_summary(freq/1e6, freq_mean, freq_std)
+            ui.set_status("Medição concluída | Média {:.2f} µV/V | DP {:.2f} µV/V".format(freq_mean, freq_std))
             registro_media(filename,diff_acdc);             # salva a diferença ac-dc média para a frequência atual no registro
 
         stop_instruments();                                 # coloca as fontes em stand-by
