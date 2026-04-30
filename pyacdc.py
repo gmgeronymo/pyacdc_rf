@@ -87,6 +87,7 @@ r_std = float(config['Measurement Config']['r_std'])
 delta_max_ppm = float(config['Measurement Config'].get('delta_max_ppm', '150'))
 measurement_cycle = config['Measurement Config'].get('measurement_cycle', 'RF-AC-RF-AC-RF').strip().upper()
 use_bme280 = config.getboolean('Misc', 'use_bme280', fallback=False)
+observacoes = config['Misc'].get('observacoes', '')
 std_model = config['Instruments'].get('std', '2182A').strip().upper()
 dut_model = config['Instruments'].get('dut', '2182A').strip().upper()
 if config.has_section('Sources'):
@@ -99,6 +100,10 @@ else:
     rf_source_model = '33600A'
 load = str(int(1 / ( (1/r_dut) + (1/r_std) )))
 auth_token = config['Security'].get('token', '').strip() if config.has_section('Security') else ''
+tvc_std_model = config['TVC'].get('std_model', '') if config.has_section('TVC') else ''
+tvc_std_serial = config['TVC'].get('std_serial', '') if config.has_section('TVC') else ''
+tvc_dut_model = config['TVC'].get('dut_model', '') if config.has_section('TVC') else ''
+tvc_dut_serial = config['TVC'].get('dut_serial', '') if config.has_section('TVC') else ''
 
 if measurement_cycle == 'RF-AC-RF-AC-RF':
     cycle_sequence = ['RF', 'AC', 'RF', 'AC', 'RF']
@@ -883,7 +888,11 @@ def criar_registro():
         registro.writerow(['Tempo de aquecimento [s]',config['Measurement Config']['aquecimento']]);
         registro.writerow(['Tempo de estabilização [s]',config['Measurement Config']['wait_time']]);
         registro.writerow(['Repetições',config['Measurement Config']['repeticoes']]);
-        registro.writerow(['Observações',config['Misc']['observacoes']]);
+        registro.writerow(['Observações',observacoes]);
+        registro.writerow(['TVC STD modelo',tvc_std_model]);
+        registro.writerow(['TVC STD serie',tvc_std_serial]);
+        registro.writerow(['TVC DUT modelo',tvc_dut_model]);
+        registro.writerow(['TVC DUT serie',tvc_dut_serial]);
         registro.writerow([' ']);
         registro.writerow([' ']);
 
@@ -1095,13 +1104,34 @@ def is_measurement_running():
 def apply_runtime_config(payload):
     global wait_time, heating_time, repeticoes, vac_nominal, vdc_nominal
     global r_dut, r_std, delta_max_ppm, measurement_cycle
-    global std_model, dut_model
+    global std_model, dut_model, source_mode, ac_source_model, rf_source_model
+    global use_bme280, observacoes, tvc_std_model, tvc_std_serial, tvc_dut_model, tvc_dut_serial
+    for section in ('Sources', 'GPIB', 'TVC', 'Misc', 'Instruments', 'Measurement Config'):
+        if not config.has_section(section):
+            config.add_section(section)
     if 'std_model' in payload:
         std_model = str(payload['std_model']).strip().upper()
         config['Instruments']['std'] = std_model
     if 'dut_model' in payload:
         dut_model = str(payload['dut_model']).strip().upper()
         config['Instruments']['dut'] = dut_model
+    if 'gpib_std' in payload:
+        config['GPIB']['std'] = str(payload['gpib_std']).strip()
+    if 'gpib_dut' in payload:
+        config['GPIB']['dut'] = str(payload['gpib_dut']).strip()
+    if 'source_mode' in payload:
+        source_mode = str(payload['source_mode']).strip().lower()
+        config['Sources']['mode'] = source_mode
+    if 'ac_source_model' in payload:
+        ac_source_model = str(payload['ac_source_model']).strip().upper()
+        config['Sources']['ac_source'] = ac_source_model
+    if 'rf_source_model' in payload:
+        rf_source_model = str(payload['rf_source_model']).strip().upper()
+        config['Sources']['rf_source'] = rf_source_model
+    if 'gpib_ac_source' in payload:
+        config['GPIB']['ac_source'] = str(payload['gpib_ac_source']).strip()
+    if 'gpib_rf_source' in payload:
+        config['GPIB']['rf_source'] = str(payload['gpib_rf_source']).strip()
     if 'voltage' in payload:
         vac_nominal = float(payload['voltage'])
         vdc_nominal = float(payload['voltage'])
@@ -1129,6 +1159,24 @@ def apply_runtime_config(payload):
     if 'measurement_cycle' in payload:
         measurement_cycle = str(payload['measurement_cycle']).strip().upper()
         config['Measurement Config']['measurement_cycle'] = measurement_cycle
+    if 'observacoes' in payload:
+        observacoes = str(payload['observacoes'])
+        config['Misc']['observacoes'] = observacoes
+    if 'use_bme280' in payload:
+        use_bme280 = str(payload['use_bme280']).strip().lower() in ('1', 'true', 'yes', 'on')
+        config['Misc']['use_bme280'] = 'true' if use_bme280 else 'false'
+    if 'tvc_std_model' in payload:
+        tvc_std_model = str(payload['tvc_std_model']).strip()
+        config['TVC']['std_model'] = tvc_std_model
+    if 'tvc_std_serial' in payload:
+        tvc_std_serial = str(payload['tvc_std_serial']).strip()
+        config['TVC']['std_serial'] = tvc_std_serial
+    if 'tvc_dut_model' in payload:
+        tvc_dut_model = str(payload['tvc_dut_model']).strip()
+        config['TVC']['dut_model'] = tvc_dut_model
+    if 'tvc_dut_serial' in payload:
+        tvc_dut_serial = str(payload['tvc_dut_serial']).strip()
+        config['TVC']['dut_serial'] = tvc_dut_serial
 
     recompute_runtime_values()
     if measurement_cycle == 'RF-AC-RF-AC-RF':
@@ -1200,6 +1248,13 @@ def create_backend_app():
         return jsonify({
             'std_model': std_model,
             'dut_model': dut_model,
+            'gpib_std': config['GPIB'].get('std', ''),
+            'gpib_dut': config['GPIB'].get('dut', ''),
+            'source_mode': source_mode,
+            'ac_source_model': ac_source_model,
+            'rf_source_model': rf_source_model,
+            'gpib_ac_source': config['GPIB'].get('ac_source', ''),
+            'gpib_rf_source': config['GPIB'].get('rf_source', ''),
             'voltage': vac_nominal,
             'frequency': config['Measurement Config']['frequency'],
             'r_dut': r_dut,
@@ -1209,6 +1264,12 @@ def create_backend_app():
             'repeticoes': repeticoes,
             'delta_max_ppm': delta_max_ppm,
             'measurement_cycle': measurement_cycle,
+            'observacoes': observacoes,
+            'use_bme280': use_bme280,
+            'tvc_std_model': tvc_std_model,
+            'tvc_std_serial': tvc_std_serial,
+            'tvc_dut_model': tvc_dut_model,
+            'tvc_dut_serial': tvc_dut_serial,
         })
 
     @app.post('/config')
@@ -1239,21 +1300,52 @@ def create_web_client_app(server_url, token=''):
     @app.get('/')
     def webui_endpoint():
         return """<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>pyACDC RF - Web Client</title>
-<style>:root{--bg:#0f1318;--panel:#171d24;--line:#2a3441;--text:#e7edf5;--muted:#93a1b2;--ok:#3ecf8e;--bad:#ff6b6b;--acc:#59b0ff}body{margin:0;font-family:"DejaVu Sans Mono","Consolas",monospace;background:linear-gradient(135deg,#0d1117,#121a23);color:var(--text)}.wrap{padding:14px;display:grid;gap:12px;grid-template-columns:2fr 1fr 1fr}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}h3{margin:0 0 8px 0;font-size:15px;color:#cfe7ff}.row{margin:3px 0;color:var(--muted)}.row b{color:var(--text)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #24303d;padding:6px;text-align:right}th:first-child,td:first-child{text-align:left}.grid2,.grid1{display:grid;gap:12px;grid-column:1/span 3}.grid2{grid-template-columns:1fr 1.4fr}.grid1{grid-template-columns:1fr}.ok{color:var(--ok);font-weight:bold}.bad{color:var(--bad);font-weight:bold}.hl{color:var(--acc);font-weight:bold}.cmd{display:flex;gap:8px}input,button{background:#0f151d;color:var(--text);border:1px solid #304055;border-radius:8px;padding:8px 10px}button{cursor:pointer}.btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}.foot{color:var(--muted);font-size:12px;margin-top:6px}#edit_section{display:none}@media (max-width:980px){.wrap{grid-template-columns:1fr;padding:10px}.grid2,.grid1{grid-column:1/span 1;grid-template-columns:1fr}.card{padding:8px}table{display:block;overflow:auto;white-space:nowrap;font-size:12px}.cmd{flex-direction:column}input{width:100%;box-sizing:border-box}}</style></head><body>
-<div class='wrap'><div class='card'><h3>Controle das Medicoes</h3><div class='row'>Frequencia atual: <b id='freq'>-</b></div><div class='row'>Tensao AC atual: <b id='vdc'>-</b></div><div class='row'>Tensao RF atual: <b id='vac'>-</b></div><div class='row'>Espera: <b id='wait'>-</b></div><div class='row'>Mensagem: <b id='status'>-</b></div><div class='foot'>Estado: <span id='running'>-</span></div></div>
+<style>
+:root{--bg:#0f1318;--panel:#171d24;--line:#2a3441;--text:#e7edf5;--muted:#93a1b2;--ok:#3ecf8e;--bad:#ff6b6b;--acc:#59b0ff}
+body{margin:0;font-family:"DejaVu Sans Mono","Consolas",monospace;background:linear-gradient(135deg,#0d1117,#121a23);color:var(--text)}
+.wrap{padding:14px;display:grid;gap:12px;grid-template-columns:2fr 1fr 1fr}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}
+h3{margin:0 0 8px 0;font-size:15px;color:#cfe7ff}.row{margin:4px 0;color:var(--muted)}.row b{color:var(--text)}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #24303d;padding:6px;text-align:right}th:first-child,td:first-child{text-align:left}
+.grid2,.grid1{display:grid;gap:12px;grid-column:1/span 3}.grid2{grid-template-columns:1fr 1.4fr}.grid1{grid-template-columns:1fr}
+.ok{color:var(--ok);font-weight:bold}.bad{color:var(--bad);font-weight:bold}.hl{color:var(--acc);font-weight:bold}
+.cmd{display:flex;gap:8px}input,button,textarea,select{background:#0f151d;color:var(--text);border:1px solid #304055;border-radius:8px;padding:8px 10px}
+button{cursor:pointer}.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.foot{color:var(--muted);font-size:12px;margin-top:6px}
+#edit_section{display:none}.compact .hide-compact{display:none!important}
+@media (max-width:980px){.wrap{grid-template-columns:1fr;padding:10px}.grid2,.grid1{grid-column:1/span 1;grid-template-columns:1fr}.card{padding:8px}table{display:block;overflow:auto;white-space:nowrap;font-size:12px}.cmd{flex-direction:column}input,textarea,select{width:100%;box-sizing:border-box}}
+</style></head><body>
+<div id='root' class='wrap'>
+<div class='card'><h3>Controle das Medicoes</h3><div class='row'>Frequencia atual: <b id='freq'>-</b></div><div class='row'>Tensao AC atual: <b id='vdc'>-</b></div><div class='row'>Tensao RF atual: <b id='vac'>-</b></div><div class='row'>Espera: <b id='wait'>-</b></div><div class='row'>Mensagem: <b id='status'>-</b></div><div class='foot'>Estado: <span id='running'>-</span></div></div>
 <div class='card'><h3>Programa da Medicao</h3><div id='freq_list'></div><div class='row'>Vdc nominal: <b id='pvdc'>-</b></div><div class='row'>Vac nominal: <b id='pvac'>-</b></div><div class='row'>n STD: <b id='nstd'>-</b></div><div class='row'>n DUT: <b id='ndut'>-</b></div></div>
-<div class='card'><h3>Controle</h3><div class='cmd'><input id='cmd' placeholder='comando > start|stop|status|help|quit' style='flex:1'><button onclick='sendCmd()'>Enviar</button></div><div class='btns'><button onclick="quick('start')">start</button><button onclick="quick('stop')">stop</button><button onclick="quick('status')">status</button><button onclick="quick('help')">help</button><button onclick='toggleEdit()'>editar programa</button></div><div class='foot' id='help'>Comandos: start, stop, status, help, quit</div></div>
+<div class='card'><h3>Controle</h3><div class='cmd'><input id='cmd' placeholder='comando > start|stop|status|help|quit' style='flex:1'><button onclick='sendCmd()'>Enviar</button></div><div class='btns'><button onclick="quick('start')">start</button><button onclick="quick('stop')">stop</button><button onclick="quick('status')">status</button><button onclick="quick('help')">help</button><button onclick='toggleCompact()'>modo compacto</button><button onclick='toggleEdit()'>editar configuracoes</button></div><div class='foot' id='help'>Comandos: start, stop, status, help, quit</div></div>
 <div class='grid2'><div class='card'><h3>Leituras Instantaneas</h3><table><thead><tr><th>Ciclo</th><th>STD [mV]</th><th>DUT [mV]</th></tr></thead><tbody id='cycles'></tbody></table></div><div class='card'><h3>Resultados da Medicao</h3><table><thead><tr><th>Dif. RF-AC [µV/V]</th><th>Delta [µV/V]</th><th>Status</th></tr></thead><tbody id='results'></tbody></table></div></div>
-<div class='grid1'><div class='card'><h3>Tendencia RF-AC</h3><canvas id='trend' height='130'></canvas></div></div><div class='grid1'><div class='card'><h3>Resumo da Medicao</h3><table><thead><tr><th>Frequencia [MHz]</th><th>Media RF-AC [µV/V]</th><th>Desvio padrao [µV/V]</th></tr></thead><tbody id='summary'></tbody></table></div></div>
-<div class='grid1' id='edit_section'><div class='card'><h3>Editar Programa de Medicao</h3><div class='row'>STD <input id='cfg_std' size='8'> DUT <input id='cfg_dut' size='8'> Tensao[V] <input id='cfg_voltage' size='8'> Repeticoes <input id='cfg_rep' size='5'></div><div class='row'>Frequencias[MHz] <input id='cfg_freq' size='40'></div><div class='row'>r_dut <input id='cfg_rdut' size='8'> r_std <input id='cfg_rstd' size='8'> wait[s] <input id='cfg_wait' size='5'> aquecimento[s] <input id='cfg_heat' size='5'> delta <input id='cfg_delta' size='7'></div><div class='row'>ciclo <input id='cfg_cycle' size='20'></div><div class='btns'><button onclick='loadConfig()'>Carregar</button><button onclick='saveConfig()'>Salvar</button></div></div></div></div>
-<script>function fmt(v){return(v===null||v===undefined)?'-':String(v)}function row(tds){return '<tr>'+tds.map(x=>'<td>'+x+'</td>').join('')+'</tr>'}function toggleEdit(){const s=document.getElementById('edit_section');s.style.display=(s.style.display==='none'||s.style.display==='')?'grid':'none';}
-function drawTrend(rows){const c=document.getElementById('trend'),x=c.getContext('2d');c.width=c.clientWidth;c.height=130;x.clearRect(0,0,c.width,c.height);x.strokeStyle='#2a3441';x.strokeRect(0,0,c.width,c.height);const vals=rows.filter(r=>!r.discarded).map(r=>Number(r.dif));if(vals.length<2){x.fillStyle='#93a1b2';x.fillText('Aguardando pontos...',10,20);return;}const mn=Math.min(...vals),mx=Math.max(...vals),p=10;x.beginPath();x.strokeStyle='#3ecf8e';vals.forEach((v,i)=>{const xx=p+i*(c.width-2*p)/(vals.length-1);const yy=p+(mx===mn?0.5:(mx-v)/(mx-mn))*(c.height-2*p);if(i===0)x.moveTo(xx,yy);else x.lineTo(xx,yy)});x.stroke();}
-async function fetchStatus(){try{const r=await fetch('/api/status');const s=await r.json();document.getElementById('freq').textContent=fmt(s.current_frequency);document.getElementById('vdc').textContent=fmt(s.current_vdc);document.getElementById('vac').textContent=fmt(s.current_vac);document.getElementById('wait').textContent=fmt(s.wait_message);document.getElementById('status').textContent=fmt(s.status);document.getElementById('running').innerHTML=s.running?'<span class="ok">EM EXECUCAO</span>':'<span class="hl">PARADO</span>';document.getElementById('pvdc').textContent=Number(s.programmed_vdc||0).toFixed(4)+' V';document.getElementById('pvac').textContent=Number(s.programmed_vac||0).toFixed(4)+' V';document.getElementById('nstd').textContent=fmt(s.n_std);document.getElementById('ndut').textContent=fmt(s.n_dut);const cf=(s.current_frequency||'').split(' ')[0];document.getElementById('freq_list').innerHTML=(s.programmed_frequencies_mhz||[]).map(f=>{const l=Number(f).toFixed(0);return(String(Number(f).toFixed(0))===cf)?'<span class="hl">> '+l+' <</span>':l}).join('<br>')||'-';document.getElementById('cycles').innerHTML=(s.cycle_rows||[]).map(c=>row([fmt(c.cycle),c.std===null?'-':Number(c.std).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6}),c.dut===null?'-':Number(c.dut).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6})])).join('');document.getElementById('results').innerHTML=(s.results_rows||[]).map(rw=>row([Number(rw.dif).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.delta).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),rw.discarded?'<span class="bad">DESCARTADO</span>':'<span class="ok">ACEITO</span>'])).join('');document.getElementById('summary').innerHTML=(s.summary_rows||[]).map(rw=>row([Number(rw.frequency_mhz).toFixed(0),Number(rw.mean).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.std).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})])).join('')||row(['-','-','-']);drawTrend(s.results_rows||[]);}catch(e){document.getElementById('status').textContent='Falha de comunicação com backend'}}
+<div class='grid1 hide-compact'><div class='card'><h3>Tendencia RF-AC</h3><canvas id='trend' height='130'></canvas></div></div>
+<div class='grid1 hide-compact'><div class='card'><h3>Resumo da Medicao</h3><table><thead><tr><th>Frequencia [MHz]</th><th>Media RF-AC [µV/V]</th><th>Desvio padrao [µV/V]</th></tr></thead><tbody id='summary'></tbody></table></div></div>
+<div class='grid1' id='edit_section'><div class='card'><h3>Configuracao dos Instrumentos</h3>
+<div class='row'>STD modelo <input id='cfg_std' size='8'> GPIB STD <input id='cfg_gpib_std' size='5'> DUT modelo <input id='cfg_dut' size='8'> GPIB DUT <input id='cfg_gpib_dut' size='5'></div>
+<div class='row'>Modo fontes <select id='cfg_source_mode'><option value='shared'>shared</option><option value='separate'>separate</option></select> Fonte AC modelo <input id='cfg_ac_model' size='8'> GPIB AC <input id='cfg_gpib_ac' size='5'></div>
+<div class='row'>Fonte RF modelo <input id='cfg_rf_model' size='8'> GPIB RF <input id='cfg_gpib_rf' size='5'></div>
+<h3 style='margin-top:12px'>Programa de Medicao</h3>
+<div class='row'>Tensao[V] <input id='cfg_voltage' size='8'> Frequencias[MHz] <input id='cfg_freq' size='40'></div>
+<div class='row'>r_dut <input id='cfg_rdut' size='8'> r_std <input id='cfg_rstd' size='8'> repeticoes <input id='cfg_rep' size='5'> wait[s] <input id='cfg_wait' size='5'> aquecimento[s] <input id='cfg_heat' size='5'></div>
+<div class='row'>delta [µV/V] <input id='cfg_delta' size='7'> ciclo <input id='cfg_cycle' size='20'></div>
+<div class='row'>observacoes <input id='cfg_obs' size='48'> use_bme280 <select id='cfg_bme'><option value='false'>false</option><option value='true'>true</option></select></div>
+<div class='row'>TVC STD modelo <input id='cfg_tvc_std_model' size='12'> serie <input id='cfg_tvc_std_serial' size='12'> TVC DUT modelo <input id='cfg_tvc_dut_model' size='12'> serie <input id='cfg_tvc_dut_serial' size='12'></div>
+<div class='btns'><button onclick='loadConfig()'>Carregar</button><button onclick='saveConfig()'>Salvar</button></div>
+</div></div>
+</div>
+<script>
+function fmt(v){return(v===null||v===undefined)?'-':String(v)}
+function row(tds){return '<tr>'+tds.map(x=>'<td>'+x+'</td>').join('')+'</tr>'}
+function toggleEdit(){const s=document.getElementById('edit_section');s.style.display=(s.style.display==='none'||s.style.display==='')?'grid':'none'}
+function toggleCompact(){document.getElementById('root').classList.toggle('compact')}
+function drawTrend(rows,totalReps){const c=document.getElementById('trend'),x=c.getContext('2d');c.width=c.clientWidth;c.height=180;const w=c.width,h=c.height;const m={l:50,r:12,t:12,b:30};const pw=w-m.l-m.r,ph=h-m.t-m.b;x.clearRect(0,0,w,h);x.fillStyle='#e7edf5';x.font='12px DejaVu Sans Mono';x.strokeStyle='#2a3441';x.strokeRect(m.l,m.t,pw,ph);const vals=rows.map(r=>Number(r.dif)).filter(v=>Number.isFinite(v));let ymin=-1,ymax=1;if(vals.length){ymin=Math.min(...vals);ymax=Math.max(...vals);if(ymin===ymax){ymin-=1;ymax+=1;}const pad=(ymax-ymin)*0.1;ymin-=pad;ymax+=pad;}const reps=(Number.isFinite(totalReps)&&totalReps>0)?Math.floor(totalReps):Math.max(1,rows.length);const yToPix=v=>m.t+(ymax-v)*(ph/(ymax-ymin));const xToPix=i=>m.l+((i-1)/(Math.max(1,reps-1)))*pw;for(let k=0;k<=4;k++){const v=ymin+(k/4)*(ymax-ymin);const yy=yToPix(v);x.strokeStyle='#223040';x.beginPath();x.moveTo(m.l,yy);x.lineTo(m.l+pw,yy);x.stroke();x.fillStyle='#93a1b2';x.fillText(v.toFixed(2),4,yy+4);}x.fillStyle='#93a1b2';x.fillText('Dif. RF-AC [µV/V]',6,10);x.fillText('Repeticao',m.l+pw/2-30,h-6);x.strokeStyle='#304055';x.beginPath();x.moveTo(m.l,m.t+ph);x.lineTo(m.l+pw,m.t+ph);x.stroke();const xticks=Math.min(reps,10);for(let t=1;t<=xticks;t++){const idx=Math.round(1+(t-1)*(reps-1)/Math.max(1,xticks-1));const xx=xToPix(idx);x.strokeStyle='#304055';x.beginPath();x.moveTo(xx,m.t+ph);x.lineTo(xx,m.t+ph+4);x.stroke();x.fillStyle='#93a1b2';x.fillText(String(idx),xx-6,m.t+ph+16);}rows.forEach((r,ix)=>{const v=Number(r.dif);if(!Number.isFinite(v))return;const xx=xToPix(ix+1);const yy=yToPix(v);x.fillStyle=r.discarded?'#ff6b6b':'#3ecf8e';x.beginPath();x.arc(xx,yy,3,0,Math.PI*2);x.fill();});}async function fetchStatus(){try{const r=await fetch('/api/status');const s=await r.json();document.getElementById('freq').textContent=fmt(s.current_frequency);document.getElementById('vdc').textContent=fmt(s.current_vdc);document.getElementById('vac').textContent=fmt(s.current_vac);document.getElementById('wait').textContent=fmt(s.wait_message);document.getElementById('status').textContent=fmt(s.status);document.getElementById('running').innerHTML=s.running?'<span class="ok">EM EXECUCAO</span>':'<span class="hl">PARADO</span>';document.getElementById('pvdc').textContent=Number(s.programmed_vdc||0).toFixed(4)+' V';document.getElementById('pvac').textContent=Number(s.programmed_vac||0).toFixed(4)+' V';document.getElementById('nstd').textContent=fmt(s.n_std);document.getElementById('ndut').textContent=fmt(s.n_dut);const cf=(s.current_frequency||'').split(' ')[0];document.getElementById('freq_list').innerHTML=(s.programmed_frequencies_mhz||[]).map(f=>{const l=Number(f).toFixed(0);return(String(Number(f).toFixed(0))===cf)?'<span class="hl">> '+l+' <</span>':l}).join('<br>')||'-';document.getElementById('cycles').innerHTML=(s.cycle_rows||[]).map(c=>row([fmt(c.cycle),c.std===null?'-':Number(c.std).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6}),c.dut===null?'-':Number(c.dut).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6})])).join('');document.getElementById('results').innerHTML=(s.results_rows||[]).map(rw=>row([Number(rw.dif).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.delta).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),rw.discarded?'<span class="bad">DESCARTADO</span>':'<span class="ok">ACEITO</span>'])).join('');document.getElementById('summary').innerHTML=(s.summary_rows||[]).map(rw=>row([Number(rw.frequency_mhz).toFixed(0),Number(rw.mean).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.std).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})])).join('')||row(['-','-','-']);drawTrend(s.results_rows||[], Number(s.total_repeats||0));}catch(e){document.getElementById('status').textContent='Falha de comunicação com backend'}}
 async function quick(cmd){if(cmd==='status'){await fetchStatus();return}if(cmd==='help'){document.getElementById('help').textContent='Comandos: start, stop, status, help, quit';return}if(cmd==='quit'){document.getElementById('help').textContent='No frontend web, use stop e feche a aba.';return}const r=await fetch('/api/'+cmd,{method:'POST'});const j=await r.json();document.getElementById('status').textContent=j.message||'OK';await fetchStatus()}
 async function sendCmd(){const el=document.getElementById('cmd');const cmd=(el.value||'').trim().toLowerCase();el.value='';if(!cmd)return;await quick(cmd)}
-async function loadConfig(){const r=await fetch('/api/config');const c=await r.json();document.getElementById('cfg_std').value=c.std_model||'';document.getElementById('cfg_dut').value=c.dut_model||'';document.getElementById('cfg_voltage').value=c.voltage||'';document.getElementById('cfg_freq').value=c.frequency||'';document.getElementById('cfg_rdut').value=c.r_dut||'';document.getElementById('cfg_rstd').value=c.r_std||'';document.getElementById('cfg_rep').value=c.repeticoes||'';document.getElementById('cfg_wait').value=c.wait_time||'';document.getElementById('cfg_heat').value=c.aquecimento||'';document.getElementById('cfg_delta').value=c.delta_max_ppm||'';document.getElementById('cfg_cycle').value=c.measurement_cycle||'';}
-async function saveConfig(){const p={std_model:document.getElementById('cfg_std').value,dut_model:document.getElementById('cfg_dut').value,voltage:document.getElementById('cfg_voltage').value,frequency:document.getElementById('cfg_freq').value,r_dut:document.getElementById('cfg_rdut').value,r_std:document.getElementById('cfg_rstd').value,repeticoes:document.getElementById('cfg_rep').value,wait_time:document.getElementById('cfg_wait').value,aquecimento:document.getElementById('cfg_heat').value,delta_max_ppm:document.getElementById('cfg_delta').value,measurement_cycle:document.getElementById('cfg_cycle').value};const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();document.getElementById('status').textContent=j.message||'OK';await fetchStatus();}
-document.getElementById('cmd').addEventListener('keydown',async(e)=>{if(e.key==='Enter')await sendCmd()});fetchStatus();loadConfig();setInterval(fetchStatus,700);</script></body></html>"""
+async function loadConfig(){const r=await fetch('/api/config');const c=await r.json();const set=(id,v)=>document.getElementById(id).value=(v===undefined||v===null)?'':v;set('cfg_std',c.std_model);set('cfg_dut',c.dut_model);set('cfg_gpib_std',c.gpib_std);set('cfg_gpib_dut',c.gpib_dut);set('cfg_source_mode',c.source_mode);set('cfg_ac_model',c.ac_source_model);set('cfg_rf_model',c.rf_source_model);set('cfg_gpib_ac',c.gpib_ac_source);set('cfg_gpib_rf',c.gpib_rf_source);set('cfg_voltage',c.voltage);set('cfg_freq',c.frequency);set('cfg_rdut',c.r_dut);set('cfg_rstd',c.r_std);set('cfg_rep',c.repeticoes);set('cfg_wait',c.wait_time);set('cfg_heat',c.aquecimento);set('cfg_delta',c.delta_max_ppm);set('cfg_cycle',c.measurement_cycle);set('cfg_obs',c.observacoes);set('cfg_bme',String(c.use_bme280));set('cfg_tvc_std_model',c.tvc_std_model);set('cfg_tvc_std_serial',c.tvc_std_serial);set('cfg_tvc_dut_model',c.tvc_dut_model);set('cfg_tvc_dut_serial',c.tvc_dut_serial)}
+async function saveConfig(){const g=id=>document.getElementById(id).value;const p={std_model:g('cfg_std'),dut_model:g('cfg_dut'),gpib_std:g('cfg_gpib_std'),gpib_dut:g('cfg_gpib_dut'),source_mode:g('cfg_source_mode'),ac_source_model:g('cfg_ac_model'),rf_source_model:g('cfg_rf_model'),gpib_ac_source:g('cfg_gpib_ac'),gpib_rf_source:g('cfg_gpib_rf'),voltage:g('cfg_voltage'),frequency:g('cfg_freq'),r_dut:g('cfg_rdut'),r_std:g('cfg_rstd'),repeticoes:g('cfg_rep'),wait_time:g('cfg_wait'),aquecimento:g('cfg_heat'),delta_max_ppm:g('cfg_delta'),measurement_cycle:g('cfg_cycle'),observacoes:g('cfg_obs'),use_bme280:g('cfg_bme'),tvc_std_model:g('cfg_tvc_std_model'),tvc_std_serial:g('cfg_tvc_std_serial'),tvc_dut_model:g('cfg_tvc_dut_model'),tvc_dut_serial:g('cfg_tvc_dut_serial')};const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();document.getElementById('status').textContent=j.message||'OK';await fetchStatus();}
+document.getElementById('cmd').addEventListener('keydown',async(e)=>{if(e.key==='Enter')await sendCmd()});fetchStatus();loadConfig();setInterval(fetchStatus,700);
+</script></body></html>"""
 
     @app.get('/api/status')
     def api_status():
