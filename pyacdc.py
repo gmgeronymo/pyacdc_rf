@@ -98,6 +98,7 @@ else:
     ac_source_model = '33600A'
     rf_source_model = '33600A'
 load = str(int(1 / ( (1/r_dut) + (1/r_std) )))
+auth_token = config['Security'].get('token', '').strip() if config.has_section('Security') else ''
 
 if measurement_cycle == 'RF-AC-RF-AC-RF':
     cycle_sequence = ['RF', 'AC', 'RF', 'AC', 'RF']
@@ -121,6 +122,12 @@ stop_event = threading.Event()
 
 class MeasurementStopped(Exception):
     pass
+
+
+def recompute_runtime_values():
+    global load, freq_array
+    load = str(int(1 / ((1/r_dut) + (1/r_std))))
+    freq_array = config['Measurement Config']['frequency'].split(',')
 
 
 class MeasurementUI:
@@ -1085,8 +1092,67 @@ def is_measurement_running():
     return measurement_thread is not None and measurement_thread.is_alive()
 
 
+def apply_runtime_config(payload):
+    global wait_time, heating_time, repeticoes, vac_nominal, vdc_nominal
+    global r_dut, r_std, delta_max_ppm, measurement_cycle
+    global std_model, dut_model
+    if 'std_model' in payload:
+        std_model = str(payload['std_model']).strip().upper()
+        config['Instruments']['std'] = std_model
+    if 'dut_model' in payload:
+        dut_model = str(payload['dut_model']).strip().upper()
+        config['Instruments']['dut'] = dut_model
+    if 'voltage' in payload:
+        vac_nominal = float(payload['voltage'])
+        vdc_nominal = float(payload['voltage'])
+        config['Measurement Config']['voltage'] = str(payload['voltage'])
+    if 'frequency' in payload:
+        config['Measurement Config']['frequency'] = str(payload['frequency'])
+    if 'r_dut' in payload:
+        r_dut = float(payload['r_dut'])
+        config['Measurement Config']['r_dut'] = str(payload['r_dut'])
+    if 'r_std' in payload:
+        r_std = float(payload['r_std'])
+        config['Measurement Config']['r_std'] = str(payload['r_std'])
+    if 'wait_time' in payload:
+        wait_time = int(payload['wait_time'])
+        config['Measurement Config']['wait_time'] = str(payload['wait_time'])
+    if 'aquecimento' in payload:
+        heating_time = int(payload['aquecimento'])
+        config['Measurement Config']['aquecimento'] = str(payload['aquecimento'])
+    if 'repeticoes' in payload:
+        repeticoes = int(payload['repeticoes'])
+        config['Measurement Config']['repeticoes'] = str(payload['repeticoes'])
+    if 'delta_max_ppm' in payload:
+        delta_max_ppm = float(payload['delta_max_ppm'])
+        config['Measurement Config']['delta_max_ppm'] = str(payload['delta_max_ppm'])
+    if 'measurement_cycle' in payload:
+        measurement_cycle = str(payload['measurement_cycle']).strip().upper()
+        config['Measurement Config']['measurement_cycle'] = measurement_cycle
+
+    recompute_runtime_values()
+    if measurement_cycle == 'RF-AC-RF-AC-RF':
+        new_cycle = ['RF', 'AC', 'RF', 'AC', 'RF']
+    elif measurement_cycle == 'AC-RF-AC':
+        new_cycle = ['AC', 'RF', 'AC']
+    else:
+        raise NameError('measurement_cycle invalido')
+
+    global cycle_sequence, rf_indices, ac_indices, cycle_csv_labels
+    cycle_sequence = new_cycle
+    rf_indices = [i for i, c in enumerate(cycle_sequence) if c == 'RF']
+    ac_indices = [i for i, c in enumerate(cycle_sequence) if c == 'AC']
+    cycle_csv_labels = ['RF' if c == 'RF' else 'AC 100 kHz' for c in cycle_sequence]
+
+
 def create_backend_app():
     app = Flask(__name__)
+
+    def check_auth():
+        if auth_token == '':
+            return True
+        token = request.headers.get('X-Auth-Token', '')
+        return token == auth_token
 
     @app.get('/')
     def root_endpoint():
@@ -1094,6 +1160,8 @@ def create_backend_app():
 
     @app.get('/status')
     def status_endpoint():
+        if not check_auth():
+            return jsonify({'ok': False, 'message': 'Nao autorizado'}), 401
         running = is_measurement_running()
         data = ui.to_dict() if ui is not None else {}
         data['running'] = running
@@ -1101,10 +1169,14 @@ def create_backend_app():
 
     @app.get('/commands')
     def commands_endpoint():
+        if not check_auth():
+            return jsonify({'ok': False, 'message': 'Nao autorizado'}), 401
         return jsonify({'commands': ['start', 'stop', 'status', 'help', 'quit']})
 
     @app.post('/start')
     def start_endpoint():
+        if not check_auth():
+            return jsonify({'ok': False, 'message': 'Nao autorizado'}), 401
         global measurement_thread
         with measurement_lock:
             if is_measurement_running():
@@ -1116,62 +1188,104 @@ def create_backend_app():
 
     @app.post('/stop')
     def stop_endpoint():
+        if not check_auth():
+            return jsonify({'ok': False, 'message': 'Nao autorizado'}), 401
         stop_event.set()
         return jsonify({'ok': True, 'message': 'Comando stop enviado'})
+
+    @app.get('/config')
+    def config_get_endpoint():
+        if not check_auth():
+            return jsonify({'ok': False, 'message': 'Nao autorizado'}), 401
+        return jsonify({
+            'std_model': std_model,
+            'dut_model': dut_model,
+            'voltage': vac_nominal,
+            'frequency': config['Measurement Config']['frequency'],
+            'r_dut': r_dut,
+            'r_std': r_std,
+            'wait_time': wait_time,
+            'aquecimento': heating_time,
+            'repeticoes': repeticoes,
+            'delta_max_ppm': delta_max_ppm,
+            'measurement_cycle': measurement_cycle,
+        })
+
+    @app.post('/config')
+    def config_post_endpoint():
+        if not check_auth():
+            return jsonify({'ok': False, 'message': 'Nao autorizado'}), 401
+        if is_measurement_running():
+            return jsonify({'ok': False, 'message': 'Nao e possivel editar configuracao com medicao em execucao'}), 409
+        payload = request.get_json(silent=True) or {}
+        try:
+            apply_runtime_config(payload)
+            if ui is not None:
+                ui.set_program([float(v.strip()) for v in freq_array], vdc_nominal, vac_nominal)
+                ui.set_repetition(0, repeticoes)
+            return jsonify({'ok': True, 'message': 'Configuracao atualizada'})
+        except Exception as exc:
+            return jsonify({'ok': False, 'message': str(exc)}), 400
 
     return app
 
 
-def create_web_client_app(server_url):
+def create_web_client_app(server_url, token=''):
     app = Flask(__name__)
+
+    def auth_headers():
+        return {'X-Auth-Token': token} if token else {}
 
     @app.get('/')
     def webui_endpoint():
-        return """<!doctype html>
-<html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
-<title>pyACDC RF - Web Client</title><style>
-:root{--bg:#0f1318;--panel:#171d24;--line:#2a3441;--text:#e7edf5;--muted:#93a1b2;--ok:#3ecf8e;--bad:#ff6b6b;--acc:#59b0ff}
-body{margin:0;font-family:"DejaVu Sans Mono","Consolas",monospace;background:linear-gradient(135deg,#0d1117,#121a23);color:var(--text)}
-.wrap{padding:14px;display:grid;gap:12px;grid-template-columns:2fr 1fr 1fr}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}
-h3{margin:0 0 8px 0;font-size:15px;color:#cfe7ff}.row{margin:3px 0;color:var(--muted)}.row b{color:var(--text)}
-table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #24303d;padding:6px;text-align:right}th:first-child,td:first-child{text-align:left}
-.grid2{display:grid;gap:12px;grid-column:1/span 3;grid-template-columns:1fr 1.4fr}.grid1{display:grid;gap:12px;grid-column:1/span 3;grid-template-columns:1fr}
-.ok{color:var(--ok);font-weight:bold}.bad{color:var(--bad);font-weight:bold}.hl{color:var(--acc);font-weight:bold}
-.cmd{display:flex;gap:8px}input,button{background:#0f151d;color:var(--text);border:1px solid #304055;border-radius:8px;padding:8px 10px}button{cursor:pointer}
-.btns{display:flex;gap:8px;margin-top:8px}.foot{color:var(--muted);font-size:12px;margin-top:6px}
-</style></head><body><div class='wrap'>
+        return """<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>pyACDC RF - Web Client</title>
+<style>:root{--bg:#0f1318;--panel:#171d24;--line:#2a3441;--text:#e7edf5;--muted:#93a1b2;--ok:#3ecf8e;--bad:#ff6b6b;--acc:#59b0ff}body{margin:0;font-family:"DejaVu Sans Mono","Consolas",monospace;background:linear-gradient(135deg,#0d1117,#121a23);color:var(--text)}.wrap{padding:14px;display:grid;gap:12px;grid-template-columns:2fr 1fr 1fr}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}h3{margin:0 0 8px 0;font-size:15px;color:#cfe7ff}.row{margin:3px 0;color:var(--muted)}.row b{color:var(--text)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #24303d;padding:6px;text-align:right}th:first-child,td:first-child{text-align:left}.grid2,.grid1{display:grid;gap:12px;grid-column:1/span 3}.grid2{grid-template-columns:1fr 1.4fr}.grid1{grid-template-columns:1fr}.ok{color:var(--ok);font-weight:bold}.bad{color:var(--bad);font-weight:bold}.hl{color:var(--acc);font-weight:bold}.cmd{display:flex;gap:8px}input,button{background:#0f151d;color:var(--text);border:1px solid #304055;border-radius:8px;padding:8px 10px}button{cursor:pointer}.btns{display:flex;gap:8px;margin-top:8px}.foot{color:var(--muted);font-size:12px;margin-top:6px}</style></head><body>
+<div class='wrap'>
 <div class='card'><h3>Controle das Medicoes</h3><div class='row'>Frequencia atual: <b id='freq'>-</b></div><div class='row'>Tensao AC atual: <b id='vdc'>-</b></div><div class='row'>Tensao RF atual: <b id='vac'>-</b></div><div class='row'>Espera: <b id='wait'>-</b></div><div class='row'>Mensagem: <b id='status'>-</b></div><div class='foot'>Estado: <span id='running'>-</span></div></div>
-<div class='card'><h3>Programa da Medicao</h3><div id='freq_list'></div><div class='row'>Vdc nominal: <b id='pvdc'>-</b></div><div class='row'>Vac nominal: <b id='pvac'>-</b></div></div>
+<div class='card'><h3>Programa da Medicao</h3><div id='freq_list'></div><div class='row'>Vdc nominal: <b id='pvdc'>-</b></div><div class='row'>Vac nominal: <b id='pvac'>-</b></div><div class='row'>n STD: <b id='nstd'>-</b></div><div class='row'>n DUT: <b id='ndut'>-</b></div></div>
 <div class='card'><h3>Controle</h3><div class='cmd'><input id='cmd' placeholder='comando > start|stop|status|help|quit' style='flex:1'><button onclick='sendCmd()'>Enviar</button></div><div class='btns'><button onclick="quick('start')">start</button><button onclick="quick('stop')">stop</button><button onclick="quick('status')">status</button><button onclick="quick('help')">help</button></div><div class='foot' id='help'>Comandos: start, stop, status, help, quit</div></div>
 <div class='grid2'><div class='card'><h3>Leituras Instantaneas</h3><table><thead><tr><th>Ciclo</th><th>STD [mV]</th><th>DUT [mV]</th></tr></thead><tbody id='cycles'></tbody></table></div><div class='card'><h3>Resultados da Medicao</h3><table><thead><tr><th>Dif. RF-AC [µV/V]</th><th>Delta [µV/V]</th><th>Status</th></tr></thead><tbody id='results'></tbody></table></div></div>
+<div class='grid1'><div class='card'><h3>Tendencia RF-AC</h3><canvas id='trend' height='130'></canvas></div></div>
 <div class='grid1'><div class='card'><h3>Resumo da Medicao</h3><table><thead><tr><th>Frequencia [MHz]</th><th>Media RF-AC [µV/V]</th><th>Desvio padrao [µV/V]</th></tr></thead><tbody id='summary'></tbody></table></div></div>
-</div><script>
-function fmt(v){return(v===null||v===undefined)?'-':String(v)}
-function row(tds){return '<tr>'+tds.map(x=>'<td>'+x+'</td>').join('')+'</tr>'}
-async function fetchStatus(){try{const r=await fetch('/api/status');const s=await r.json();document.getElementById('freq').textContent=fmt(s.current_frequency);document.getElementById('vdc').textContent=fmt(s.current_vdc);document.getElementById('vac').textContent=fmt(s.current_vac);document.getElementById('wait').textContent=fmt(s.wait_message);document.getElementById('status').textContent=fmt(s.status);document.getElementById('running').innerHTML=s.running?'<span class="ok">EM EXECUCAO</span>':'<span class="hl">PARADO</span>';document.getElementById('pvdc').textContent=Number(s.programmed_vdc||0).toFixed(4)+' V';document.getElementById('pvac').textContent=Number(s.programmed_vac||0).toFixed(4)+' V';const cf=(s.current_frequency||'').split(' ')[0];document.getElementById('freq_list').innerHTML=(s.programmed_frequencies_mhz||[]).map(f=>{const l=Number(f).toFixed(0);return(String(Number(f).toFixed(0))===cf)?'<span class="hl">> '+l+' <</span>':l}).join('<br>')||'-';document.getElementById('cycles').innerHTML=(s.cycle_rows||[]).map(c=>row([fmt(c.cycle),c.std===null?'-':Number(c.std).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6}),c.dut===null?'-':Number(c.dut).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6})])).join('');document.getElementById('results').innerHTML=(s.results_rows||[]).map(rw=>row([Number(rw.dif).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.delta).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),rw.discarded?'<span class="bad">DESCARTADO</span>':'<span class="ok">ACEITO</span>'])).join('');document.getElementById('summary').innerHTML=(s.summary_rows||[]).map(rw=>row([Number(rw.frequency_mhz).toFixed(0),Number(rw.mean).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.std).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})])).join('')||row(['-','-','-']);}catch(e){document.getElementById('status').textContent='Falha de comunicação com backend'}}
+<div class='grid1'><div class='card'><h3>Editar Programa de Medicao</h3><div class='row'>STD <input id='cfg_std' size='8'> DUT <input id='cfg_dut' size='8'> Tensao[V] <input id='cfg_voltage' size='8'> Repeticoes <input id='cfg_rep' size='5'></div><div class='row'>Frequencias[MHz] <input id='cfg_freq' size='40'></div><div class='row'>r_dut <input id='cfg_rdut' size='8'> r_std <input id='cfg_rstd' size='8'> wait[s] <input id='cfg_wait' size='5'> aquecimento[s] <input id='cfg_heat' size='5'> delta <input id='cfg_delta' size='7'></div><div class='row'>ciclo <input id='cfg_cycle' size='20'></div><div class='btns'><button onclick='loadConfig()'>Carregar</button><button onclick='saveConfig()'>Salvar</button></div></div></div>
+</div>
+<script>function fmt(v){return(v===null||v===undefined)?'-':String(v)}function row(tds){return '<tr>'+tds.map(x=>'<td>'+x+'</td>').join('')+'</tr>'}
+function drawTrend(rows){const c=document.getElementById('trend'),x=c.getContext('2d');c.width=c.clientWidth;c.height=130;x.clearRect(0,0,c.width,c.height);x.strokeStyle='#2a3441';x.strokeRect(0,0,c.width,c.height);const vals=rows.filter(r=>!r.discarded).map(r=>Number(r.dif));if(vals.length<2){x.fillStyle='#93a1b2';x.fillText('Aguardando pontos...',10,20);return;}const mn=Math.min(...vals),mx=Math.max(...vals),p=10;x.beginPath();x.strokeStyle='#3ecf8e';vals.forEach((v,i)=>{const xx=p+i*(c.width-2*p)/(vals.length-1);const yy=p+(mx===mn?0.5:(mx-v)/(mx-mn))*(c.height-2*p);if(i===0)x.moveTo(xx,yy);else x.lineTo(xx,yy)});x.stroke();}
+async function fetchStatus(){try{const r=await fetch('/api/status');const s=await r.json();document.getElementById('freq').textContent=fmt(s.current_frequency);document.getElementById('vdc').textContent=fmt(s.current_vdc);document.getElementById('vac').textContent=fmt(s.current_vac);document.getElementById('wait').textContent=fmt(s.wait_message);document.getElementById('status').textContent=fmt(s.status);document.getElementById('running').innerHTML=s.running?'<span class="ok">EM EXECUCAO</span>':'<span class="hl">PARADO</span>';document.getElementById('pvdc').textContent=Number(s.programmed_vdc||0).toFixed(4)+' V';document.getElementById('pvac').textContent=Number(s.programmed_vac||0).toFixed(4)+' V';document.getElementById('nstd').textContent=fmt(s.n_std);document.getElementById('ndut').textContent=fmt(s.n_dut);const cf=(s.current_frequency||'').split(' ')[0];document.getElementById('freq_list').innerHTML=(s.programmed_frequencies_mhz||[]).map(f=>{const l=Number(f).toFixed(0);return(String(Number(f).toFixed(0))===cf)?'<span class="hl">> '+l+' <</span>':l}).join('<br>')||'-';document.getElementById('cycles').innerHTML=(s.cycle_rows||[]).map(c=>row([fmt(c.cycle),c.std===null?'-':Number(c.std).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6}),c.dut===null?'-':Number(c.dut).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6})])).join('');document.getElementById('results').innerHTML=(s.results_rows||[]).map(rw=>row([Number(rw.dif).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.delta).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),rw.discarded?'<span class="bad">DESCARTADO</span>':'<span class="ok">ACEITO</span>'])).join('');document.getElementById('summary').innerHTML=(s.summary_rows||[]).map(rw=>row([Number(rw.frequency_mhz).toFixed(0),Number(rw.mean).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.std).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})])).join('')||row(['-','-','-']);drawTrend(s.results_rows||[]);}catch(e){document.getElementById('status').textContent='Falha de comunicação com backend'}}
 async function quick(cmd){if(cmd==='status'){await fetchStatus();return}if(cmd==='help'){document.getElementById('help').textContent='Comandos: start, stop, status, help, quit';return}if(cmd==='quit'){document.getElementById('help').textContent='No frontend web, use stop e feche a aba.';return}const r=await fetch('/api/'+cmd,{method:'POST'});const j=await r.json();document.getElementById('status').textContent=j.message||'OK';await fetchStatus()}
 async function sendCmd(){const el=document.getElementById('cmd');const cmd=(el.value||'').trim().toLowerCase();el.value='';if(!cmd)return;await quick(cmd)}
-document.getElementById('cmd').addEventListener('keydown',async(e)=>{if(e.key==='Enter')await sendCmd()});fetchStatus();setInterval(fetchStatus,700);
-</script></body></html>"""
+async function loadConfig(){const r=await fetch('/api/config');const c=await r.json();document.getElementById('cfg_std').value=c.std_model||'';document.getElementById('cfg_dut').value=c.dut_model||'';document.getElementById('cfg_voltage').value=c.voltage||'';document.getElementById('cfg_freq').value=c.frequency||'';document.getElementById('cfg_rdut').value=c.r_dut||'';document.getElementById('cfg_rstd').value=c.r_std||'';document.getElementById('cfg_rep').value=c.repeticoes||'';document.getElementById('cfg_wait').value=c.wait_time||'';document.getElementById('cfg_heat').value=c.aquecimento||'';document.getElementById('cfg_delta').value=c.delta_max_ppm||'';document.getElementById('cfg_cycle').value=c.measurement_cycle||'';}
+async function saveConfig(){const p={std_model:document.getElementById('cfg_std').value,dut_model:document.getElementById('cfg_dut').value,voltage:document.getElementById('cfg_voltage').value,frequency:document.getElementById('cfg_freq').value,r_dut:document.getElementById('cfg_rdut').value,r_std:document.getElementById('cfg_rstd').value,repeticoes:document.getElementById('cfg_rep').value,wait_time:document.getElementById('cfg_wait').value,aquecimento:document.getElementById('cfg_heat').value,delta_max_ppm:document.getElementById('cfg_delta').value,measurement_cycle:document.getElementById('cfg_cycle').value};const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();document.getElementById('status').textContent=j.message||'OK';await fetchStatus();}
+document.getElementById('cmd').addEventListener('keydown',async(e)=>{if(e.key==='Enter')await sendCmd()});fetchStatus();loadConfig();setInterval(fetchStatus,700);</script></body></html>"""
 
     @app.get('/api/status')
     def api_status():
-        resp = requests.get(server_url + '/status', timeout=4)
+        resp = requests.get(server_url + '/status', timeout=4, headers=auth_headers())
         return jsonify(resp.json()), resp.status_code
 
     @app.post('/api/start')
     def api_start():
-        resp = requests.post(server_url + '/start', timeout=4)
+        resp = requests.post(server_url + '/start', timeout=4, headers=auth_headers())
         return jsonify(resp.json()), resp.status_code
 
     @app.post('/api/stop')
     def api_stop():
-        resp = requests.post(server_url + '/stop', timeout=4)
+        resp = requests.post(server_url + '/stop', timeout=4, headers=auth_headers())
         return jsonify(resp.json()), resp.status_code
 
     @app.get('/api/commands')
     def api_commands():
-        resp = requests.get(server_url + '/commands', timeout=4)
+        resp = requests.get(server_url + '/commands', timeout=4, headers=auth_headers())
+        return jsonify(resp.json()), resp.status_code
+
+    @app.get('/api/config')
+    def api_config_get():
+        resp = requests.get(server_url + '/config', timeout=4, headers=auth_headers())
+        return jsonify(resp.json()), resp.status_code
+
+    @app.post('/api/config')
+    def api_config_post():
+        resp = requests.post(server_url + '/config', timeout=4, headers=auth_headers(), json=request.get_json(silent=True) or {})
         return jsonify(resp.json()), resp.status_code
 
     return app
@@ -1188,12 +1302,13 @@ def run_backend(host, port):
     app.run(host=host, port=port)
 
 
-def run_web_client(server_url, host, port):
-    app = create_web_client_app(server_url)
+def run_web_client(server_url, host, port, token=''):
+    app = create_web_client_app(server_url, token)
     app.run(host=host, port=port)
 
 
-def run_tui_client(server_url):
+def run_tui_client(server_url, token=''):
+    headers = {'X-Auth-Token': token} if token else {}
     remote_ui = MeasurementUI(enable_live=True)
     remote_ui.start()
     remote_ui.set_status('Conectando ao backend...')
@@ -1203,7 +1318,7 @@ def run_tui_client(server_url):
     def poll_status():
         while not stop_client.is_set():
             try:
-                resp = requests.get(server_url + '/status', timeout=2)
+                resp = requests.get(server_url + '/status', timeout=2, headers=headers)
                 if resp.ok:
                     remote_ui.load_dict(resp.json())
             except Exception:
@@ -1224,7 +1339,7 @@ def run_tui_client(server_url):
             return False
         if cmd in ('start', 'stop'):
             try:
-                resp = requests.post(server_url + '/' + cmd, timeout=4)
+                resp = requests.post(server_url + '/' + cmd, timeout=4, headers=headers)
                 msg = resp.json().get('message', 'OK')
                 remote_ui.set_status(msg)
             except Exception:
@@ -1232,7 +1347,7 @@ def run_tui_client(server_url):
             return False
         if cmd == 'status':
             try:
-                resp = requests.get(server_url + '/status', timeout=4)
+                resp = requests.get(server_url + '/status', timeout=4, headers=headers)
                 if resp.ok:
                     remote_ui.load_dict(resp.json())
             except Exception:
@@ -1289,14 +1404,15 @@ def main():
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--server', default='http://127.0.0.1:8000')
+    parser.add_argument('--token', default='')
     args = parser.parse_args()
 
     if args.mode == 'backend':
         run_backend(args.host, args.port)
     elif args.mode == 'tui':
-        run_tui_client(args.server.rstrip('/'))
+        run_tui_client(args.server.rstrip('/'), args.token)
     elif args.mode == 'web':
-        run_web_client(args.server.rstrip('/'), args.host, args.port)
+        run_web_client(args.server.rstrip('/'), args.host, args.port, args.token)
     else:
         run_measurement_loop(enable_live=True)
 
