@@ -48,6 +48,10 @@ import numpy
 import csv
 import argparse
 import threading
+import sys
+import select
+import termios
+import tty
 from flask import Flask, jsonify, request
 import requests
 from rich.console import Console
@@ -1145,33 +1149,72 @@ def run_tui_client(server_url):
     poll_thread = threading.Thread(target=poll_status, daemon=True)
     poll_thread.start()
 
+    def execute_command(cmd):
+        cmd = cmd.strip().lower()
+        if not cmd:
+            return False
+        if cmd == 'quit':
+            return True
+        if cmd == 'help':
+            remote_ui.set_status('Comandos: start, stop, status, help, quit')
+            return False
+        if cmd in ('start', 'stop'):
+            try:
+                resp = requests.post(server_url + '/' + cmd, timeout=4)
+                msg = resp.json().get('message', 'OK')
+                remote_ui.set_status(msg)
+            except Exception:
+                remote_ui.set_status('Erro ao enviar comando {}'.format(cmd))
+            return False
+        if cmd == 'status':
+            try:
+                resp = requests.get(server_url + '/status', timeout=4)
+                if resp.ok:
+                    remote_ui.load_dict(resp.json())
+            except Exception:
+                remote_ui.set_status('Erro ao consultar status')
+            return False
+        remote_ui.set_status('Comando inválido. Use help')
+        return False
+
+    old_settings = None
     try:
-        while True:
-            cmd = console.input('comando > ').strip().lower()
-            remote_ui.set_command_input(cmd)
-            if cmd == 'quit':
-                break
-            if cmd == 'help':
-                remote_ui.set_status('Comandos: start, stop, status, help, quit')
-                continue
-            if cmd in ('start', 'stop'):
-                try:
-                    resp = requests.post(server_url + '/' + cmd, timeout=4)
-                    msg = resp.json().get('message', 'OK')
-                    remote_ui.set_status(msg)
-                except Exception:
-                    remote_ui.set_status('Erro ao enviar comando {}'.format(cmd))
-                continue
-            if cmd == 'status':
-                try:
-                    resp = requests.get(server_url + '/status', timeout=4)
-                    if resp.ok:
-                        remote_ui.load_dict(resp.json())
-                except Exception:
-                    remote_ui.set_status('Erro ao consultar status')
-                continue
-            remote_ui.set_status('Comando inválido. Use help')
+        if sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            buffer = ''
+            remote_ui.set_command_input(buffer)
+            quit_requested = False
+            while not quit_requested:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if ready:
+                    ch = sys.stdin.read(1)
+                    if ch in ('\n', '\r'):
+                        remote_ui.set_command_input(buffer)
+                        quit_requested = execute_command(buffer)
+                        buffer = ''
+                        remote_ui.set_command_input(buffer)
+                    elif ch in ('\x7f', '\b'):
+                        buffer = buffer[:-1]
+                        remote_ui.set_command_input(buffer)
+                    elif ch == '\x03':
+                        quit_requested = True
+                    elif ch.isprintable():
+                        buffer += ch
+                        remote_ui.set_command_input(buffer)
+        else:
+            while True:
+                cmd = console.input('comando > ').strip().lower()
+                remote_ui.set_command_input(cmd)
+                if execute_command(cmd):
+                    break
     finally:
+        try:
+            if old_settings is not None:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
+        except Exception:
+            pass
         stop_client.set()
         remote_ui.stop()
 
