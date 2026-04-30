@@ -119,12 +119,20 @@ X-Auth-Token: SEU_TOKEN_AQUI
 ## 9) Campos editaveis pela interface Web
 
 - Modelo do voltimetro STD e DUT
+- Endereco GPIB dos voltimetros STD e DUT
+- Modo de fontes (shared / separate)
+- Modelo e GPIB da fonte AC
+- Modelo e GPIB da fonte RF
 - Tensao
 - Frequencias
 - `r_dut`, `r_std`
 - `repeticoes`, `wait_time`, `aquecimento`
 - `delta_max_ppm`
 - `measurement_cycle` (`RF-AC-RF-AC-RF` ou `AC-RF-AC`)
+- Observacoes
+- `use_bme280`
+- TVC STD modelo e serie
+- TVC DUT modelo e serie
 
 ## 10) Dicas operacionais
 
@@ -132,3 +140,5 @@ X-Auth-Token: SEU_TOKEN_AQUI
 - Verifique conectividade de rede entre PC cliente e Raspberry.
 - Se houver erro de autenticacao, confira token no `config.ini` e no argumento `--token`.
 - Nao altere configuracao durante medicao (o backend bloqueia `POST /config` nesse estado).
+- Use o botao "modo compacto" em dispositivos moveis para ocultar paineis secundarios.
+- Use o botao "editar configuracoes" para abrir/fechar o painel de edicao.
