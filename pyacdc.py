@@ -1088,6 +1088,10 @@ def is_measurement_running():
 def create_backend_app():
     app = Flask(__name__)
 
+    @app.get('/')
+    def root_endpoint():
+        return 'Backend de medição ativo. Use /status, /start, /stop ou rode --mode web em outro computador.'
+
     @app.get('/status')
     def status_endpoint():
         running = is_measurement_running()
@@ -1118,6 +1122,61 @@ def create_backend_app():
     return app
 
 
+def create_web_client_app(server_url):
+    app = Flask(__name__)
+
+    @app.get('/')
+    def webui_endpoint():
+        return """<!doctype html>
+<html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>pyACDC RF - Web Client</title><style>
+:root{--bg:#0f1318;--panel:#171d24;--line:#2a3441;--text:#e7edf5;--muted:#93a1b2;--ok:#3ecf8e;--bad:#ff6b6b;--acc:#59b0ff}
+body{margin:0;font-family:"DejaVu Sans Mono","Consolas",monospace;background:linear-gradient(135deg,#0d1117,#121a23);color:var(--text)}
+.wrap{padding:14px;display:grid;gap:12px;grid-template-columns:2fr 1fr 1fr}.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}
+h3{margin:0 0 8px 0;font-size:15px;color:#cfe7ff}.row{margin:3px 0;color:var(--muted)}.row b{color:var(--text)}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #24303d;padding:6px;text-align:right}th:first-child,td:first-child{text-align:left}
+.grid2{display:grid;gap:12px;grid-column:1/span 3;grid-template-columns:1fr 1.4fr}.grid1{display:grid;gap:12px;grid-column:1/span 3;grid-template-columns:1fr}
+.ok{color:var(--ok);font-weight:bold}.bad{color:var(--bad);font-weight:bold}.hl{color:var(--acc);font-weight:bold}
+.cmd{display:flex;gap:8px}input,button{background:#0f151d;color:var(--text);border:1px solid #304055;border-radius:8px;padding:8px 10px}button{cursor:pointer}
+.btns{display:flex;gap:8px;margin-top:8px}.foot{color:var(--muted);font-size:12px;margin-top:6px}
+</style></head><body><div class='wrap'>
+<div class='card'><h3>Controle das Medicoes</h3><div class='row'>Frequencia atual: <b id='freq'>-</b></div><div class='row'>Tensao AC atual: <b id='vdc'>-</b></div><div class='row'>Tensao RF atual: <b id='vac'>-</b></div><div class='row'>Espera: <b id='wait'>-</b></div><div class='row'>Mensagem: <b id='status'>-</b></div><div class='foot'>Estado: <span id='running'>-</span></div></div>
+<div class='card'><h3>Programa da Medicao</h3><div id='freq_list'></div><div class='row'>Vdc nominal: <b id='pvdc'>-</b></div><div class='row'>Vac nominal: <b id='pvac'>-</b></div></div>
+<div class='card'><h3>Controle</h3><div class='cmd'><input id='cmd' placeholder='comando > start|stop|status|help|quit' style='flex:1'><button onclick='sendCmd()'>Enviar</button></div><div class='btns'><button onclick="quick('start')">start</button><button onclick="quick('stop')">stop</button><button onclick="quick('status')">status</button><button onclick="quick('help')">help</button></div><div class='foot' id='help'>Comandos: start, stop, status, help, quit</div></div>
+<div class='grid2'><div class='card'><h3>Leituras Instantaneas</h3><table><thead><tr><th>Ciclo</th><th>STD [mV]</th><th>DUT [mV]</th></tr></thead><tbody id='cycles'></tbody></table></div><div class='card'><h3>Resultados da Medicao</h3><table><thead><tr><th>Dif. RF-AC [µV/V]</th><th>Delta [µV/V]</th><th>Status</th></tr></thead><tbody id='results'></tbody></table></div></div>
+<div class='grid1'><div class='card'><h3>Resumo da Medicao</h3><table><thead><tr><th>Frequencia [MHz]</th><th>Media RF-AC [µV/V]</th><th>Desvio padrao [µV/V]</th></tr></thead><tbody id='summary'></tbody></table></div></div>
+</div><script>
+function fmt(v){return(v===null||v===undefined)?'-':String(v)}
+function row(tds){return '<tr>'+tds.map(x=>'<td>'+x+'</td>').join('')+'</tr>'}
+async function fetchStatus(){try{const r=await fetch('/api/status');const s=await r.json();document.getElementById('freq').textContent=fmt(s.current_frequency);document.getElementById('vdc').textContent=fmt(s.current_vdc);document.getElementById('vac').textContent=fmt(s.current_vac);document.getElementById('wait').textContent=fmt(s.wait_message);document.getElementById('status').textContent=fmt(s.status);document.getElementById('running').innerHTML=s.running?'<span class="ok">EM EXECUCAO</span>':'<span class="hl">PARADO</span>';document.getElementById('pvdc').textContent=Number(s.programmed_vdc||0).toFixed(4)+' V';document.getElementById('pvac').textContent=Number(s.programmed_vac||0).toFixed(4)+' V';const cf=(s.current_frequency||'').split(' ')[0];document.getElementById('freq_list').innerHTML=(s.programmed_frequencies_mhz||[]).map(f=>{const l=Number(f).toFixed(0);return(String(Number(f).toFixed(0))===cf)?'<span class="hl">> '+l+' <</span>':l}).join('<br>')||'-';document.getElementById('cycles').innerHTML=(s.cycle_rows||[]).map(c=>row([fmt(c.cycle),c.std===null?'-':Number(c.std).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6}),c.dut===null?'-':Number(c.dut).toLocaleString('pt-BR',{minimumFractionDigits:6,maximumFractionDigits:6})])).join('');document.getElementById('results').innerHTML=(s.results_rows||[]).map(rw=>row([Number(rw.dif).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.delta).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),rw.discarded?'<span class="bad">DESCARTADO</span>':'<span class="ok">ACEITO</span>'])).join('');document.getElementById('summary').innerHTML=(s.summary_rows||[]).map(rw=>row([Number(rw.frequency_mhz).toFixed(0),Number(rw.mean).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),Number(rw.std).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})])).join('')||row(['-','-','-']);}catch(e){document.getElementById('status').textContent='Falha de comunicação com backend'}}
+async function quick(cmd){if(cmd==='status'){await fetchStatus();return}if(cmd==='help'){document.getElementById('help').textContent='Comandos: start, stop, status, help, quit';return}if(cmd==='quit'){document.getElementById('help').textContent='No frontend web, use stop e feche a aba.';return}const r=await fetch('/api/'+cmd,{method:'POST'});const j=await r.json();document.getElementById('status').textContent=j.message||'OK';await fetchStatus()}
+async function sendCmd(){const el=document.getElementById('cmd');const cmd=(el.value||'').trim().toLowerCase();el.value='';if(!cmd)return;await quick(cmd)}
+document.getElementById('cmd').addEventListener('keydown',async(e)=>{if(e.key==='Enter')await sendCmd()});fetchStatus();setInterval(fetchStatus,700);
+</script></body></html>"""
+
+    @app.get('/api/status')
+    def api_status():
+        resp = requests.get(server_url + '/status', timeout=4)
+        return jsonify(resp.json()), resp.status_code
+
+    @app.post('/api/start')
+    def api_start():
+        resp = requests.post(server_url + '/start', timeout=4)
+        return jsonify(resp.json()), resp.status_code
+
+    @app.post('/api/stop')
+    def api_stop():
+        resp = requests.post(server_url + '/stop', timeout=4)
+        return jsonify(resp.json()), resp.status_code
+
+    @app.get('/api/commands')
+    def api_commands():
+        resp = requests.get(server_url + '/commands', timeout=4)
+        return jsonify(resp.json()), resp.status_code
+
+    return app
+
+
 def run_backend(host, port):
     global ui
     if ui is None:
@@ -1126,6 +1185,11 @@ def run_backend(host, port):
         ui.set_program([float(v.strip()) for v in freq_array], vdc_nominal, vac_nominal)
         ui.set_repetition(0, repeticoes)
     app = create_backend_app()
+    app.run(host=host, port=port)
+
+
+def run_web_client(server_url, host, port):
+    app = create_web_client_app(server_url)
     app.run(host=host, port=port)
 
 
@@ -1221,7 +1285,7 @@ def run_tui_client(server_url):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['local', 'backend', 'tui'], default='local')
+    parser.add_argument('--mode', choices=['local', 'backend', 'tui', 'web'], default='local')
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--server', default='http://127.0.0.1:8000')
@@ -1231,6 +1295,8 @@ def main():
         run_backend(args.host, args.port)
     elif args.mode == 'tui':
         run_tui_client(args.server.rstrip('/'))
+    elif args.mode == 'web':
+        run_web_client(args.server.rstrip('/'), args.host, args.port)
     else:
         run_measurement_loop(enable_live=True)
 
