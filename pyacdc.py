@@ -46,6 +46,10 @@ import configparser
 import time
 import numpy
 import csv
+import argparse
+import threading
+from flask import Flask, jsonify, request
+import requests
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -108,10 +112,16 @@ if use_bme280:
 
 console = Console()
 ui = None
+stop_event = threading.Event()
+
+
+class MeasurementStopped(Exception):
+    pass
 
 
 class MeasurementUI:
-    def __init__(self):
+    def __init__(self, enable_live=True):
+        self.enable_live = enable_live
         self.status = "Inicializando..."
         self.wait_message = "-"
         self.current_frequency = "-"
@@ -127,11 +137,14 @@ class MeasurementUI:
         self.cycle_rows = []
         self.results_rows = []
         self.summary_rows = []
+        self.commands = ["start", "stop", "status", "help", "quit"]
+        self.command_input = ""
         self.live = None
 
     def start(self):
-        self.live = Live(self.render(), refresh_per_second=4, auto_refresh=False, console=console)
-        self.live.start()
+        if self.enable_live:
+            self.live = Live(self.render(), refresh_per_second=4, auto_refresh=False, console=console)
+            self.live.start()
 
     def stop(self):
         if self.live is not None:
@@ -186,6 +199,10 @@ class MeasurementUI:
         self.n_dut = "{:.3f}".format(n_dut)
         self.refresh()
 
+    def set_command_input(self, text):
+        self.command_input = text
+        self.refresh()
+
     def add_cycle_reading(self, cycle_index, std_value, dut_value):
         if cycle_index < len(self.cycle_rows):
             self.cycle_rows[cycle_index]['std'] = std_value
@@ -217,7 +234,7 @@ class MeasurementUI:
         layout.split_column(
             Layout(name="top", size=16),
             Layout(name="mid", size=18),
-            Layout(name="bottom", size=10)
+            Layout(name="bottom", size=12)
         )
 
         layout["mid"].split_row(
@@ -290,6 +307,9 @@ class MeasurementUI:
             )
         layout["right"].update(Panel(results_table, title="Resultados da Medicao", border_style="magenta"))
 
+        bottom_layout = Layout()
+        bottom_layout.split_row(Layout(name="summary", ratio=3), Layout(name="commands", ratio=2))
+
         summary_table = Table(show_header=True, header_style="bold")
         summary_table.add_column("Frequencia [MHz]", justify="right")
         summary_table.add_column("Media RF-AC [µV/V]", justify="right")
@@ -303,8 +323,57 @@ class MeasurementUI:
                 )
         else:
             summary_table.add_row("-", "-", "-")
-        layout["bottom"].update(Panel(summary_table, title="Resumo da Medicao", border_style="blue"))
+        bottom_layout["summary"].update(Panel(summary_table, title="Resumo da Medicao", border_style="blue"))
+
+        cmd_table = Table(show_header=False)
+        cmd_table.add_column("c")
+        cmd_table.add_row("Comandos: {}".format(", ".join(self.commands)))
+        cmd_table.add_row("comando > {}".format(self.command_input))
+        bottom_layout["commands"].update(Panel(cmd_table, title="Controle", border_style="white"))
+
+        layout["bottom"].update(bottom_layout)
         return layout
+
+    def to_dict(self):
+        return {
+            'status': self.status,
+            'wait_message': self.wait_message,
+            'current_frequency': self.current_frequency,
+            'current_vdc': self.current_vdc,
+            'current_vac': self.current_vac,
+            'current_repeat': self.current_repeat,
+            'total_repeats': self.total_repeats,
+            'n_std': self.n_std,
+            'n_dut': self.n_dut,
+            'programmed_frequencies_mhz': self.programmed_frequencies_mhz,
+            'programmed_vdc': self.programmed_vdc,
+            'programmed_vac': self.programmed_vac,
+            'cycle_rows': self.cycle_rows,
+            'results_rows': self.results_rows,
+            'summary_rows': self.summary_rows,
+            'commands': self.commands,
+            'command_input': self.command_input,
+        }
+
+    def load_dict(self, data):
+        self.status = data.get('status', self.status)
+        self.wait_message = data.get('wait_message', self.wait_message)
+        self.current_frequency = data.get('current_frequency', self.current_frequency)
+        self.current_vdc = data.get('current_vdc', self.current_vdc)
+        self.current_vac = data.get('current_vac', self.current_vac)
+        self.current_repeat = data.get('current_repeat', self.current_repeat)
+        self.total_repeats = data.get('total_repeats', self.total_repeats)
+        self.n_std = data.get('n_std', self.n_std)
+        self.n_dut = data.get('n_dut', self.n_dut)
+        self.programmed_frequencies_mhz = data.get('programmed_frequencies_mhz', self.programmed_frequencies_mhz)
+        self.programmed_vdc = data.get('programmed_vdc', self.programmed_vdc)
+        self.programmed_vac = data.get('programmed_vac', self.programmed_vac)
+        self.cycle_rows = data.get('cycle_rows', self.cycle_rows)
+        self.results_rows = data.get('results_rows', self.results_rows)
+        self.summary_rows = data.get('summary_rows', self.summary_rows)
+        self.commands = data.get('commands', self.commands)
+        self.command_input = data.get('command_input', self.command_input)
+        self.refresh()
 
 #-------------------------------------------------------------------------------
 
@@ -320,6 +389,8 @@ class MeasurementUI:
 def espera(segundos):
     remaining = int(segundos)
     while remaining > 0:
+        if stop_event.is_set():
+            raise MeasurementStopped()
         if ui is not None:
             ui.set_wait("{} s".format(remaining))
         time.sleep(1)
@@ -896,11 +967,12 @@ def registro_media(registro_filename,diferenca):
 #-------------------------------------------------------------------------------
 # Programa principal
 #-------------------------------------------------------------------------------
-def main():
+def run_measurement_loop(enable_live=True):
     global ui
+    stop_event.clear()
     try:
-        global freq;
-        ui = MeasurementUI()
+        global freq
+        ui = MeasurementUI(enable_live=enable_live)
         ui.start()
         ui.set_status("Inicializando sistema")
         ui.set_program([float(v.strip()) for v in freq_array], vdc_nominal, vac_nominal)
@@ -909,60 +981,52 @@ def main():
             ui.set_status("Inicializando BME280 (condições ambientais)")
             bme280_init()
         ui.set_status("Inicializando instrumentos")
-        instrument_init()  # inicializa os instrumentos
+        instrument_init()
         ui.set_status("Colocando fontes em OPERATE")
-        meas_init()        # inicializa a medição (coloca fontes em operate)
+        meas_init()
         ui.set_status("Criando arquivo de registro")
-        filename = criar_registro();  # cria arquivo de registro
+        filename = criar_registro()
         ui.set_status("Arquivo {} criado".format(filename))
         ui.set_status("Aquecimento")
-        aquecimento(heating_time);  # inicia o aquecimento
-        # fazer loop para cada valor de frequencia
+        aquecimento(heating_time)
         for value in freq_array:
-            freq = float(value) * 1000000;
+            if stop_event.is_set():
+                raise MeasurementStopped()
+            freq = float(value) * 1000000
             ui.set_frequency(freq/1e6)
             ui.set_status("Iniciando medicao em {:5.0f} MHz".format(freq/1e6))
             ui.set_status("Medindo N")
-            n_array = n_measure(4);  # 4 repetições para o cálculo do N
-            n_value = n_array['results'];
+            n_array = n_measure(4)
+            n_value = n_array['results']
             ui.set_n_values(n_value[0], n_value[2])
-            ui.set_status("N STD {:.2f} (dp {:.2f}) | N DUT {:.2f} (dp {:.2f})".format(n_value[0], n_value[1], n_value[2], n_value[3]))
             ui.set_status("Calculando equilibrio RF")
-            vac_atual = equilibrio();  # calcula a tensão AC de equilíbrio
+            vac_atual = equilibrio()
             ui.set_status("Vrf aplicado: {:5.3f} V".format(vac_atual))
             ui.set_setpoints(vdc_nominal, vac_atual)
-            registro_frequencia(filename,value,n_array,vac_atual);  # inicia o registro para a frequencia atual
-            first_measure = True;   # flag para determinar se é a primeira repeticao
+            registro_frequencia(filename,value,n_array,vac_atual)
+            first_measure = True
             reuse_last_cycle = True
-
-            if vac_atual > 1.1*vac_nominal:  # verifica se a tensão AC de equilíbrio não é muito elevada
+            if vac_atual > 1.1*vac_nominal:
                 raise NameError('Tensão AC ajustada perigosamente alta!')
-            
             ui.set_status("Iniciando repeticoes da medicao")
-            diff_acdc = [];
-            Delta = [];
-            vdc_atual = vdc_nominal;
-            i = 0;
-            while (i < repeticoes):  # inicia as repetições da medição
+            diff_acdc = []
+            vdc_atual = vdc_nominal
+            i = 0
+            while (i < repeticoes):
+                if stop_event.is_set():
+                    raise MeasurementStopped()
                 ui.set_status("Repeticao {}/{} | Vac {:5.3f} V".format(i+1, repeticoes, vdc_atual))
                 ui.set_setpoints(vdc_atual, vac_atual)
                 ui.set_repetition(i+1, repeticoes)
-                if first_measure:    # testa se é a primeira medição
-                    ciclo_ac = [];
+                if first_measure:
+                    ciclo_ac = []
                     first_measure = False
                 else:
-                    if reuse_last_cycle:
-                        ciclo_ac = [readings['std_readings'][-1], readings['dut_readings'][-1]];  # caso não seja, aproveitar o último ciclo
-                    else:
-                        ciclo_ac = []
-                readings = measure(vdc_atual,vac_atual,ciclo_ac);                           # da repetição anterior
-                results = acdc_calc(readings,n_value,vdc_atual);                            # calcula a diferença ac-dc         
-                ca_data = None
-                if use_bme280:
-                    ca_data = bme280_read();
-                # original: 50 ppm
-                # usando gerador agilent: 1000 ppm (ou 0,1%) (estabilidade e resolucao nao permite criterio tao  rigido)
-                if abs(results['Delta']) > delta_max_ppm:               # se o ponto não passa no critério de descarte, repetir medição
+                    ciclo_ac = [readings['std_readings'][-1], readings['dut_readings'][-1]] if reuse_last_cycle else []
+                readings = measure(vdc_atual,vac_atual,ciclo_ac)
+                results = acdc_calc(readings,n_value,vdc_atual)
+                ca_data = bme280_read() if use_bme280 else None
+                if abs(results['Delta']) > delta_max_ppm:
                     ui.add_result(results['dif'], results['Delta'], True)
                     ui.set_status("Ponto descartado: Delta {:.2f} µV/V > {:.1f} µV/V".format(results['Delta'], delta_max_ppm))
                     reuse_last_cycle = (measurement_cycle != 'AC-RF-AC')
@@ -970,39 +1034,163 @@ def main():
                         vdc_atual = results['adj_dc']
                 else:
                     ui.add_result(results['dif'], results['Delta'], False)
-                    diff_acdc.append(results['dif']);
-                    Delta.append(results['Delta']);
-                    registro_linha(filename,results,vdc_atual,ca_data);
+                    diff_acdc.append(results['dif'])
+                    registro_linha(filename,results,vdc_atual,ca_data)
                     reuse_last_cycle = True
                     if measurement_cycle != 'AC-RF-AC':
                         vdc_atual = results['adj_dc']
-
-                    i += 1;               
+                    i += 1
                 if vdc_atual > 1.1*vdc_nominal:
-                    raise NameError('Tensão AC ajustada perigosamente alta!')    
-
+                    raise NameError('Tensão AC ajustada perigosamente alta!')
             freq_mean = numpy.mean(diff_acdc)
             freq_std = numpy.std(diff_acdc, ddof=1)
             ui.add_frequency_summary(freq/1e6, freq_mean, freq_std)
             ui.set_status("Medição concluída | Média {:.2f} µV/V | DP {:.2f} µV/V".format(freq_mean, freq_std))
-            registro_media(filename,diff_acdc);             # salva a diferença ac-dc média para a frequência atual no registro
-
-        stop_instruments();                                 # coloca as fontes em stand-by
+            registro_media(filename,diff_acdc)
+        stop_instruments()
         ui.set_status("Concluído")
-        time.sleep(1)
-                
-    except:
+        return True
+    except MeasurementStopped:
+        try:
+            stop_instruments()
+        except Exception:
+            pass
+        if ui is not None:
+            ui.set_status("Medição interrompida por comando stop")
+        return False
+    except Exception:
         try:
             stop_instruments()
         except Exception:
             pass
         import traceback
         traceback.print_exc()
-    finally:
         if ui is not None:
+            ui.set_status("Erro durante a medição")
+        return False
+    finally:
+        if enable_live and ui is not None:
             ui.stop()
-        
 
-# execução do programa principal
+
+measurement_thread = None
+measurement_lock = threading.Lock()
+
+
+def is_measurement_running():
+    return measurement_thread is not None and measurement_thread.is_alive()
+
+
+def create_backend_app():
+    app = Flask(__name__)
+
+    @app.get('/status')
+    def status_endpoint():
+        running = is_measurement_running()
+        data = ui.to_dict() if ui is not None else {}
+        data['running'] = running
+        return jsonify(data)
+
+    @app.get('/commands')
+    def commands_endpoint():
+        return jsonify({'commands': ['start', 'stop', 'status', 'help', 'quit']})
+
+    @app.post('/start')
+    def start_endpoint():
+        global measurement_thread
+        with measurement_lock:
+            if is_measurement_running():
+                return jsonify({'ok': False, 'message': 'Medição já em execução'}), 409
+            stop_event.clear()
+            measurement_thread = threading.Thread(target=run_measurement_loop, kwargs={'enable_live': False}, daemon=True)
+            measurement_thread.start()
+        return jsonify({'ok': True, 'message': 'Medição iniciada'})
+
+    @app.post('/stop')
+    def stop_endpoint():
+        stop_event.set()
+        return jsonify({'ok': True, 'message': 'Comando stop enviado'})
+
+    return app
+
+
+def run_backend(host, port):
+    global ui
+    if ui is None:
+        ui = MeasurementUI(enable_live=False)
+        ui.set_status('Backend pronto. Aguardando comando start')
+        ui.set_program([float(v.strip()) for v in freq_array], vdc_nominal, vac_nominal)
+        ui.set_repetition(0, repeticoes)
+    app = create_backend_app()
+    app.run(host=host, port=port)
+
+
+def run_tui_client(server_url):
+    remote_ui = MeasurementUI(enable_live=True)
+    remote_ui.start()
+    remote_ui.set_status('Conectando ao backend...')
+
+    stop_client = threading.Event()
+
+    def poll_status():
+        while not stop_client.is_set():
+            try:
+                resp = requests.get(server_url + '/status', timeout=2)
+                if resp.ok:
+                    remote_ui.load_dict(resp.json())
+            except Exception:
+                remote_ui.set_status('Falha de comunicação com backend')
+            time.sleep(0.5)
+
+    poll_thread = threading.Thread(target=poll_status, daemon=True)
+    poll_thread.start()
+
+    try:
+        while True:
+            cmd = console.input('comando > ').strip().lower()
+            remote_ui.set_command_input(cmd)
+            if cmd == 'quit':
+                break
+            if cmd == 'help':
+                remote_ui.set_status('Comandos: start, stop, status, help, quit')
+                continue
+            if cmd in ('start', 'stop'):
+                try:
+                    resp = requests.post(server_url + '/' + cmd, timeout=4)
+                    msg = resp.json().get('message', 'OK')
+                    remote_ui.set_status(msg)
+                except Exception:
+                    remote_ui.set_status('Erro ao enviar comando {}'.format(cmd))
+                continue
+            if cmd == 'status':
+                try:
+                    resp = requests.get(server_url + '/status', timeout=4)
+                    if resp.ok:
+                        remote_ui.load_dict(resp.json())
+                except Exception:
+                    remote_ui.set_status('Erro ao consultar status')
+                continue
+            remote_ui.set_status('Comando inválido. Use help')
+    finally:
+        stop_client.set()
+        remote_ui.stop()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['local', 'backend', 'tui'], default='local')
+    parser.add_argument('--host', default='0.0.0.0')
+    parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--server', default='http://127.0.0.1:8000')
+    args = parser.parse_args()
+
+    if args.mode == 'backend':
+        run_backend(args.host, args.port)
+    elif args.mode == 'tui':
+        run_tui_client(args.server.rstrip('/'))
+    else:
+        run_measurement_loop(enable_live=True)
+
+
 if __name__ == '__main__':
     main()

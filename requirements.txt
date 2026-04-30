@@ -2,3 +2,5 @@ numpy
 pyvisa
 pyvisa-py
 rich
+flask
+requests
