@@ -1,15 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
 # pyAC-DC.py
-# Programa para a medição de diferença RF-AC em conversores térmicos (TCs)
-# O programa aceita TCs com saída em tensão, frequência e resistência.
-# modificado em outubro de 2023 para calibrar TVCs Fluke A55 acima de 1 MHz
+# Programa para a medicao de diferenca RF-AC em conversores termicos (TCs)
+# O programa aceita TCs com saida em tensao, frequencia e resistencia.
+# Modificado em outubro de 2023 para calibrar TVCs Fluke A55 acima de 1 MHz
 # usando gerador Keysight 33600A como fonte (AC e RF)
 # usando dois DVMs (std e dut)
-#-------------------------------------------------------------------------------
-# Autor:       Gean Marcos Geronymo
 #
-# Versão inicial:      10-Jun-2016
-# Última modificação:  06-Nov-2023
-#-------------------------------------------------------------------------------
+# Autor: Gean Marcos Geronymo
+# Versao inicial: 10-Jun-2016
+# Ultima modificacao: 06-Nov-2023
 
 #-------------------------------------------------------------------------------
 # Nomenclatura de variáveis:

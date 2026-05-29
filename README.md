@@ -101,4 +101,5 @@ completas de instalação, configuração e operação dos modos backend, TUI e 
 
 ## Licença
 
-Software interno — uso no laboratório de metrologia elétrica.
+Este projeto é distribuído sob a licença GNU General Public License v2.0 (GPLv2).
+Consulte o arquivo `LICENSE` para o texto completo.
